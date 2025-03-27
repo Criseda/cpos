@@ -1,0 +1,9 @@
+#ifndef KERNEL_H
+#define KERNEL_H
+
+#include <stdint.h>
+
+// Kernel entry point
+void kernel_main(void);
+
+#endif // KERNEL_H
