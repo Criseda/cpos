@@ -44,6 +44,42 @@ make qemu
 
 For detailed instructions on building, running and extending CPOS, see [USAGE.md](docs/USAGE.md)
 
+## Memory Management
+
+CPOS uses a hybrid approach to memory management, combining C and Rust:
+
+### Architecture
+
+- **RAM Layout**: 32KB total (0x20000000 - 0x20008000)
+  - Boot Data: 0x20000000 - 0x20001000
+  - Kernel Heap: 0x20001000 - 0x20007000 (24KB)
+  - Kernel Stack: 0x20007000 - 0x20008000
+
+### Implementation
+
+- **Allocator Type**: Linked List Allocator
+- **Language**: Implemented in Rust for memory safety
+- **Features**:
+  - Thread-safe (mutex-protected)
+  - First-fit allocation strategy
+  - Block splitting to reduce fragmentation
+  - Size tracking for proper deallocation
+
+### C-Rust Integration
+
+C code can access the memory allocator through simple FFI functions:
+
+```c
+// Initialize heap
+rust_init_heap(HEAP_START, HEAP_SIZE);
+
+// Allocate memory
+void* ptr = rust_heap_alloc(size);
+
+// Free memory
+rust_heap_free(ptr);
+```
+
 ## License
 
 [MIT](LICENSE)
