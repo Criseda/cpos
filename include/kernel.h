@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-// Kernel entry point
+/* Kernel entry point */
 void main(void);
 
-#endif // KERNEL_H
+#endif /* KERNEL_H */

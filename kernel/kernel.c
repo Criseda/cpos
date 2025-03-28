@@ -9,14 +9,14 @@ void SVC_Handler(void)
 
 void main(void)
 {
-	// Print a message to UART
+	/* Print a message to UART */
 	uart_send_string("Kernel: Hello, World!\n");
 
-	// TESTS
+	/* TESTS */
 	uart_send_string("[TEST] test_svc_handler\n");
 	__asm volatile("svc #0");
 
-	// Infinite loop to keep the kernel running
+	/* Infinite loop to keep the kernel running */
 	while (1) {
 	}
 }
