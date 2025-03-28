@@ -19,9 +19,100 @@
 #define HEAP_START 0x20001000
 #define HEAP_SIZE 0x6000 // 24KB
 
-void SVC_Handler(void)
+void __attribute__((naked)) SVC_Handler(void)
 {
-	uart_send_string("[SUCCESS] SVC Handler Invoked!\n");
+	__asm volatile(
+		"tst lr, #4\n" // Test bit 2 of EXC_RETURN to determine stack used
+		"ite eq\n" // If-Then-Else block
+		"mrseq r1, msp\n" // If bit 2 is clear, use MSP (note: r1 not r0)
+		"mrsne r1, psp\n" // If bit 2 is set, use PSP (note: r1 not r0)
+		"push {lr}\n" // Save link register
+		// r0 already contains syscall number, r1 has stack pointer
+		"bl rust_handle_svc\n" // Call Rust handler
+		"pop {pc}\n" // Return
+	);
+}
+
+void syscall_test(void)
+{
+	uart_send_string("[TEST] System Call Interface Test\n");
+
+	// Test write syscall
+	const char *test_str = "Hello from syscall!\n";
+	int result = rust_syscall(SYS_WRITE, 1, (uint32_t)test_str, 19);
+	if (result == 19) {
+		uart_send_string("  - SYS_WRITE: OK\n");
+	} else {
+		uart_send_string("  - SYS_WRITE: FAILED\n");
+	}
+
+	// Test memory allocation through syscall
+	uint32_t ptr = 0;
+	result = rust_syscall(SYS_ALLOC, 128, 0, 0);
+	if (result > 0) {
+		ptr = (uint32_t)result;
+		uart_send_string("  - SYS_ALLOC: OK\n");
+
+		// Try to write to the allocated memory
+		uint8_t *mem = (uint8_t *)ptr;
+		for (int i = 0; i < 10; i++) {
+			mem[i] = i + 1;
+		}
+
+		// Verify the memory writes
+		int error = 0;
+		for (int i = 0; i < 10; i++) {
+			if (mem[i] != i + 1) {
+				error = 1;
+				break;
+			}
+		}
+
+		if (!error) {
+			uart_send_string(
+				"  - Memory access through syscall: OK\n");
+		} else {
+			uart_send_string(
+				"  - Memory access through syscall: FAILED\n");
+		}
+
+		// Free memory through syscall
+		result = rust_syscall(SYS_FREE, ptr, 0, 0);
+		if (result == 0) {
+			uart_send_string("  - SYS_FREE: OK\n");
+		} else {
+			uart_send_string("  - SYS_FREE: FAILED\n");
+		}
+	} else {
+		uart_send_string("  - SYS_ALLOC: FAILED\n");
+	}
+
+	// Test invalid syscall number
+	result = rust_syscall(999, 0, 0, 0);
+	if (result < 0) {
+		uart_send_string("  - Invalid syscall handling: OK\n");
+	} else {
+		uart_send_string("  - Invalid syscall handling: FAILED\n");
+	}
+
+	// Test direct SVC instruction
+	uart_send_string("  - Testing SVC instruction directly:\n");
+	// Create a test message
+	const char *direct_msg = "Test from direct SVC!\n";
+
+	// Use the SVC instruction with proper arguments on stack
+	__asm volatile(
+		"mov r0, #1\n" // SYS_WRITE syscall number
+		"mov r1, #1\n" // fd = 1 (stdout)
+		"ldr r2, %[msg]\n" // buffer address
+		"mov r3, #20\n" // length of message
+		"svc #0\n" // SVC instruction with 0 (we extract real syscall # from r0)
+		:
+		: [msg] "m"(direct_msg) // Input constraints
+		: "r0", "r1", "r2", "r3", "memory" // Clobber list
+	);
+
+	uart_send_string("[TEST] System Call Interface Test Complete\n");
 }
 
 void memory_test(void)
@@ -94,11 +185,8 @@ void main(void)
 	rust_init_heap(HEAP_START, HEAP_SIZE);
 
 	/* TESTS */
-	/* svc test */
-	uart_send_string("[TEST] test_svc_handler\n");
-	__asm volatile("svc #0");
-	/* memory test */
 	memory_test();
+	syscall_test();
 
 	/* Infinite loop to keep the kernel running */
 	while (1) {
