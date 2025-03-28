@@ -44,6 +44,58 @@ make qemu
 
 For detailed instructions on building, running and extending CPOS, see [USAGE.md](docs/USAGE.md)
 
+## Interrupt Handling
+
+CPOS uses the standard ARM Cortex-M3 interrupt vector system for handling exceptions and hardware interrupts.
+
+### Vector Table
+
+- Located at the beginning of Flash memory
+- Contains addresses of exception handlers
+- Implemented in `vectors.c` and placed using the `.vectors` section
+
+The key vector entries include:
+
+- **0x00000000**: Initial Stack Pointer - Stack location for exceptions
+- **0x00000004**: Reset_Handler - System reset entry point
+- **0x00000008**: NMI_Handler - Non-maskable interrupt
+- **0x0000000C**: HardFault_Handler - All classes of faults
+- **0x0000002C**: SVC_Handler - Supervisor call (system calls)
+
+### Implementation
+
+- **Default Handlers**: All exceptions initially point to a default handler
+- **Weak Symbols**: Handlers are declared with `__attribute__((weak))` 
+- **Override Mechanism**: Specific handlers can be implemented where needed
+- **Vector Positioning**: Linker script places vectors at the correct memory address
+
+### Exception Types
+
+- **System Exceptions**: Reset, NMI, HardFault, etc.
+- **SVC (Supervisor Call)**: Used for system calls from user to kernel mode
+- **Peripheral Interrupts**: For device-specific interrupt handling
+
+### Usage Example
+
+Implementing a custom SVC handler:
+
+```c
+void SVC_Handler(void)
+{
+    // Identify which system call was requested
+    // Handle the system call
+    // Return to user mode
+    uart_send_string("System call processed\n");
+}
+```
+
+Triggering a system call:
+
+```c
+// Generate a supervisor call (SVC) with immediate value #0
+__asm volatile("svc #0");
+```
+
 ## Memory Management
 
 CPOS uses a hybrid approach to memory management, combining C and Rust:
@@ -55,7 +107,7 @@ CPOS uses a hybrid approach to memory management, combining C and Rust:
   - Kernel Heap: 0x20001000 - 0x20007000 (24KB)
   - Kernel Stack: 0x20007000 - 0x20008000
 
-### Implementation
+### Memory Implementation
 
 - **Allocator Type**: Linked List Allocator
 - **Language**: Implemented in Rust for memory safety
