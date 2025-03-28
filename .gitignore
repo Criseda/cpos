@@ -72,3 +72,9 @@ modules.order
 !.kunitconfig
 !.mailmap
 !.rustfmt.toml
+
+# Rust build directory
+/rust_kernel/target/
+
+# Other common Rust artifacts
+**/*.rs.bk
