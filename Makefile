@@ -18,7 +18,7 @@ INIT_DIR = init
 
 # Source files
 BOOTLOADER_SRC = $(BOOTLOADER_DIR)/bootloader.s
-KERNEL_SRC = $(KERNEL_DIR)/kernel.c
+KERNEL_SRC = $(KERNEL_DIR)/kernel.c $(KERNEL_DIR)/vectors.c
 INIT_SRC = $(INIT_DIR)/init.c
 LIB_SRC = $(wildcard $(LIB_DIR)/*.c)
 
@@ -48,17 +48,12 @@ QEMU_DEBUG = -d in_asm,cpu_reset > qemu_debug.log 2>&1
 # Build Rules
 all: $(TARGET)
 
-$(BOOTLOADER_OBJ): $(BOOTLOADER_SRC)
+# Pattern rules for building object files
+%.o: %.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+%.o: %.s
 	$(AS) $(ASFLAGS) -o $@ $<
-
-$(KERNEL_OBJ): $(KERNEL_SRC)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-$(INIT_OBJ): $(INIT_SRC)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-$(LIB_OBJ): $(LIB_SRC)
-	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(TARGET): $(BOOTLOADER_OBJ) $(KERNEL_OBJ) $(INIT_OBJ) $(LIB_OBJ)
 	$(CC) $(ASFLAGS) -nostdlib -ffreestanding -T $(LD_SCRIPT) -Wl,--no-warn-mismatch -o $@ $^
@@ -66,7 +61,7 @@ $(TARGET): $(BOOTLOADER_OBJ) $(KERNEL_OBJ) $(INIT_OBJ) $(LIB_OBJ)
 
 # QEMU target
 qemu:
-	@echo "Starting QEMU. To exit, press Ctrl+A, then X"
+	@echo "Starting QEMU. To exit, press Ctrl+C"
 	$(QEMU) $(QEMU_ARGS) -kernel $(TARGET)
 
 clean:

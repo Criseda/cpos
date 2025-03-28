@@ -4,6 +4,6 @@
 #include <stdint.h>
 
 // Kernel entry point
-void kernel_main(void);
+void main(void);
 
 #endif // KERNEL_H
