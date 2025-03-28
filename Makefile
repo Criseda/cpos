@@ -95,5 +95,7 @@ qemu-debug:
 
 clean:
 	rm -f $(BOOTLOADER_OBJ) $(KERNEL_OBJ) $(INIT_OBJ) $(LIB_OBJ) $(TARGET) cpos.bin
+	@echo "Cleaning Rust artifacts..."
+	@cd $(RUST_DIR) && cargo clean
 
 .PHONY: all clean qemu qemu-gdb qemu-debug 
