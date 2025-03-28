@@ -17,13 +17,16 @@ See [INSTALLATION.md](docs/INSTALLATION.md) for detailed instructions on install
 ## 📂 Project Structure
 
 ```plaintext
-bootloader/   - Boot code responsible for loading the OS
-docs/         - Documentation and specifications
-include/      - Header files (shared definitions)
-init/         - System initialization (before kernel runs)
-kernel/       - Core kernel logic
-lib/          - Utility libraries (if needed)
-tests/        - Test cases and debugging tools
+bootloader/       - Boot code responsible for loading the OS
+docs/             - Documentation and specifications
+include/          - Header files (shared definitions)
+init/             - System initialization (before kernel runs)
+kernel/           - Core kernel logic
+lib/              - Utility libraries for C components
+rust_kernel/      - Rust kernel components
+  ├─ memory/      - Memory management implementation
+  └─ lib.rs       - Rust entry point and FFI interface
+tests/            - Test cases and debugging tools
 ```
 
 ## Quick Start
