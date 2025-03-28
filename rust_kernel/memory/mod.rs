@@ -1,4 +1,13 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2025 Laurentiu Cristian Preda <laurentiu.cristian.preda@gmail.com>
+//
+// Author: Laurentiu Cristian Preda (criseda)
+// GitHub: https://github.com/criseda
+//
 //! Memory management module for the kernel
+//!
+//! This module provides memory management functionality for the kernel,
+//! including heap allocation and memory layout definitions.
 
 pub mod allocator;
 

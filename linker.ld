@@ -1,3 +1,9 @@
+/* 
+ * CPOS Linker Script
+ * 
+ * Author: Laurentiu Cristian Preda (criseda)
+ */
+ 
 ENTRY(Reset_Handler)
 
 MEMORY

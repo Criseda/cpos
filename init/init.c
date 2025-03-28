@@ -1,3 +1,16 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (C) 2025 Laurentiu Cristian Preda <laurentiu.cristian.preda@gmail.com>
+ *
+ * Author: Laurentiu Cristian Preda (criseda)
+ * GitHub: https://github.com/criseda
+ *
+ * Initialization Code for CPOS
+ * 
+ * This file provides the initialization process that runs after the bootloader
+ * and before transferring control to the main kernel.
+ */
+
 #include <stdint.h>
 #include "uart.h"
 #include "kernel.h"

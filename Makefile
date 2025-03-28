@@ -1,4 +1,13 @@
-# Makefile for building cpos
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2025 Laurentiu Cristian Preda <laurentiu.cristian.preda@gmail.com>
+#
+# Author: Laurentiu Cristian Preda (criseda)
+# GitHub: https://github.com/criseda
+#
+# Makefile for CPOS
+# 
+# This Makefile builds the CPOS operating system, including both C and Rust components.
+# It handles compilation, linking, and provides targets for running the system in QEMU.
 
 # Target binary name
 TARGET = cpos.elf
@@ -76,11 +85,15 @@ qemu:
 	@echo "Starting QEMU. To exit, press Ctrl+C"
 	$(QEMU) $(QEMU_ARGS) -kernel $(TARGET)
 
-qemu-debug:
+qemu-gdb:
 	@echo "Starting QEMU with GDB server. Connect with 'arm-none-eabi-gdb -ex \"target remote localhost:1234\"'"
 	$(QEMU) $(QEMU_ARGS) -kernel $(TARGET) $(QEMU_GDB_DEBUG)
+
+qemu-debug:
+	@echo "Starting QEMU with debug logging. Check qemu_debug.log for details."
+	$(QEMU) $(QEMU_ARGS) -kernel $(TARGET) $(QEMU_DEBUG)
 
 clean:
 	rm -f $(BOOTLOADER_OBJ) $(KERNEL_OBJ) $(INIT_OBJ) $(LIB_OBJ) $(TARGET) cpos.bin
 
-.PHONY: all clean qemu qemu-debug
+.PHONY: all clean qemu qemu-gdb qemu-debug 

@@ -1,3 +1,16 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (C) 2025 Laurentiu Cristian Preda <laurentiu.cristian.preda@gmail.com>
+ *
+ * Author: Laurentiu Cristian Preda (criseda)
+ * GitHub: https://github.com/criseda
+ *
+ * Rust Interface for CPOS
+ * 
+ * This header file declares the interface functions provided by the Rust
+ * components for use in the C kernel code.
+ */
+
 #ifndef RUST_INTERFACE_H
 #define RUST_INTERFACE_H
 

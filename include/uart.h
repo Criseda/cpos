@@ -1,3 +1,15 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (C) 2025 Laurentiu Cristian Preda <laurentiu.cristian.preda@gmail.com>
+ *
+ * Author: Laurentiu Cristian Preda (criseda)
+ * GitHub: https://github.com/criseda
+ *
+ * UART Interface for CPOS
+ * 
+ * This header file declares UART functionality for serial communication.
+ */
+
 #ifndef UART_H
 #define UART_H
 

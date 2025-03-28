@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2025 Laurentiu Cristian Preda <laurentiu.cristian.preda@gmail.com>
+//
+// Author: Laurentiu Cristian Preda (criseda)
+// GitHub: https://github.com/criseda
+//
 //! Rust kernel components for CPOS
 //!
 //! This crate provides Rust implementations of kernel components

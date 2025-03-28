@@ -1,3 +1,16 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (C) 2025 Laurentiu Cristian Preda <laurentiu.cristian.preda@gmail.com>
+ *
+ * Author: Laurentiu Cristian Preda (criseda)
+ * GitHub: https://github.com/criseda
+ *
+ * Main Kernel Implementation for CPOS
+ * 
+ * This file contains the main kernel entry point and core functionality
+ * including memory management tests and system call handling.
+ */
+
 #include <stdint.h>
 #include "uart.h"
 #include "vectors.h"

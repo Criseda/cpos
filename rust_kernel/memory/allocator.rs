@@ -1,4 +1,14 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2025 Laurentiu Cristian Preda <laurentiu.cristian.preda@gmail.com>
+//
+// Author: Laurentiu Cristian Preda (criseda)
+// GitHub: https://github.com/criseda
+//
 //! Linked list allocator for kernel heap
+//!
+//! This module provides a memory allocator implementation using a linked list
+//! to track free memory blocks. It supports allocation, deallocation, and
+//! memory block coalescing for efficient memory reuse.
 
 use core::ptr::null_mut;
 use spin::Mutex;

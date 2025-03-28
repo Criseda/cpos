@@ -1,3 +1,16 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (C) 2025 Laurentiu Cristian Preda <laurentiu.cristian.preda@gmail.com>
+ *
+ * Author: Laurentiu Cristian Preda (criseda)
+ * GitHub: https://github.com/criseda
+ *
+ * Interrupt Vector Interface for CPOS
+ * 
+ * This header file declares the interrupt vector table functions
+ * and related functionality.
+ */
+
 #ifndef VECTORS_H
 #define VECTORS_H
 

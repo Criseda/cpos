@@ -1,3 +1,16 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (C) 2025 Laurentiu Cristian Preda <laurentiu.cristian.preda@gmail.com>
+ *
+ * Author: Laurentiu Cristian Preda (criseda)
+ * GitHub: https://github.com/criseda
+ *
+ * Interrupt Vector Table for CPOS
+ * 
+ * This file sets up the ARM Cortex-M interrupt vector table, defining the
+ * entry points for various exception handlers and system interrupts.
+ */
+
 #include <stdint.h>
 
 /* Declarations for interrupt handlers */

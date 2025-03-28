@@ -1,3 +1,16 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (C) 2025 Laurentiu Cristian Preda <laurentiu.cristian.preda@gmail.com>
+ *
+ * Author: Laurentiu Cristian Preda (criseda)
+ * GitHub: https://github.com/criseda
+ *
+ * Bootloader for CPOS
+ * 
+ * This file contains the initial boot code that runs immediately after reset.
+ * It performs stack setup and calls the initialization routine.
+ */
+
 .syntax unified
 .cpu cortex-m3
 .thumb

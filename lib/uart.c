@@ -1,6 +1,19 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (C) 2025 Laurentiu Cristian Preda <laurentiu.cristian.preda@gmail.com>
+ *
+ * Author: Laurentiu Cristian Preda (criseda)
+ * GitHub: https://github.com/criseda
+ *
+ * UART implementation for CPOS
+ * 
+ * This file provides UART (Universal Asynchronous Receiver/Transmitter)
+ * functionality for serial communication.
+ */
+
 #include "uart.h"
 
-#define UART0_BASE 0x4000C000 /* LM3S6965 UART0 base address */ 
+#define UART0_BASE 0x4000C000 /* LM3S6965 UART0 base address */
 #define UART0_DR *((volatile uint32_t *)(UART0_BASE + 0x00))
 #define UART0_FR *((volatile uint32_t *)(UART0_BASE + 0x18))
 
