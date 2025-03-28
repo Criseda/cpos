@@ -15,6 +15,11 @@ KERNEL_DIR = kernel
 INCLUDE_DIR = include
 LIB_DIR = lib
 INIT_DIR = init
+RUST_DIR = rust_kernel
+
+# Rust settings
+RUST_TARGET = thumbv7m-none-eabi
+RUST_LIB = $(RUST_DIR)/target/$(RUST_TARGET)/release/librust_kernel.a
 
 # Source files
 BOOTLOADER_SRC = $(BOOTLOADER_DIR)/bootloader.s
@@ -56,16 +61,26 @@ all: $(TARGET)
 %.o: %.s
 	$(AS) $(ASFLAGS) -o $@ $<
 
-$(TARGET): $(BOOTLOADER_OBJ) $(KERNEL_OBJ) $(INIT_OBJ) $(LIB_OBJ)
+# Rule to build the Rust library
+$(RUST_LIB):
+	@echo "Building Rust components..."
+	@cd $(RUST_DIR) && rustup target add $(RUST_TARGET) 2>/dev/null || true
+	@cd $(RUST_DIR) && cargo build --release --target $(RUST_TARGET)
+
+$(TARGET): $(BOOTLOADER_OBJ) $(KERNEL_OBJ) $(INIT_OBJ) $(LIB_OBJ) $(RUST_LIB)
 	$(CC) $(ASFLAGS) -nostdlib -ffreestanding -T $(LD_SCRIPT) -Wl,--no-warn-mismatch -o $@ $^
 	$(OBJCOPY) -O binary $@ cpos.bin
 
 # QEMU target
 qemu:
 	@echo "Starting QEMU. To exit, press Ctrl+C"
+	$(QEMU) $(QEMU_ARGS) -kernel $(TARGET)
+
+qemu-debug:
+	@echo "Starting QEMU with GDB server. Connect with 'arm-none-eabi-gdb -ex \"target remote localhost:1234\"'"
 	$(QEMU) $(QEMU_ARGS) -kernel $(TARGET) $(QEMU_GDB_DEBUG)
 
 clean:
 	rm -f $(BOOTLOADER_OBJ) $(KERNEL_OBJ) $(INIT_OBJ) $(LIB_OBJ) $(TARGET) cpos.bin
 
-.PHONY: all clean qemu
+.PHONY: all clean qemu qemu-debug
