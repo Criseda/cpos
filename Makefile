@@ -44,6 +44,7 @@ QEMU_MCU = cortex-m3
 QEMU_MACHINE = lm3s6965evb
 QEMU_ARGS = -machine $(QEMU_MACHINE) -cpu $(QEMU_MCU) -nographic -monitor null -serial stdio
 QEMU_DEBUG = -d in_asm,cpu_reset > qemu_debug.log 2>&1
+QEMU_GDB_DEBUG = -nographic -s -S
 
 # Build Rules
 all: $(TARGET)
@@ -62,7 +63,7 @@ $(TARGET): $(BOOTLOADER_OBJ) $(KERNEL_OBJ) $(INIT_OBJ) $(LIB_OBJ)
 # QEMU target
 qemu:
 	@echo "Starting QEMU. To exit, press Ctrl+C"
-	$(QEMU) $(QEMU_ARGS) -kernel $(TARGET)
+	$(QEMU) $(QEMU_ARGS) -kernel $(TARGET) $(QEMU_GDB_DEBUG)
 
 clean:
 	rm -f $(BOOTLOADER_OBJ) $(KERNEL_OBJ) $(INIT_OBJ) $(LIB_OBJ) $(TARGET) cpos.bin
