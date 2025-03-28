@@ -1,6 +1,9 @@
 # CPOS - ARM Cortex-M3 Operating System
 
+## Version: 0.2.0
+
 Bare-metal ARM OS designed for embedded systems with ARM Cortex-M3 processors.
+
 
 ## Getting Started
 
@@ -74,7 +77,7 @@ The key vector entries include:
 ### Implementation
 
 - **Default Handlers**: All exceptions initially point to a default handler
-- **Weak Symbols**: Handlers are declared with `__attribute__((weak))` 
+- **Weak Symbols**: Handlers are declared with `__attribute__((weak))`
 - **Override Mechanism**: Specific handlers can be implemented where needed
 - **Vector Positioning**: Linker script places vectors at the correct memory address
 
