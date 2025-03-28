@@ -12,6 +12,7 @@
 #![no_std]
 
 pub mod memory;
+pub mod syscall;
 
 use core::panic::PanicInfo;
 
@@ -49,4 +50,12 @@ pub extern "C" fn rust_heap_free(ptr: *mut u8) {
     unsafe {
         memory::free(ptr);
     }
+}
+
+/// Process a system call from C code
+///
+/// This function is called by the C SVC handler
+#[no_mangle]
+pub extern "C" fn rust_syscall(number: u32, arg1: u32, arg2: u32, arg3: u32) -> i32 {
+    syscall::handle_syscall(number, arg1, arg2, arg3)
 }
