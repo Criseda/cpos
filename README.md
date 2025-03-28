@@ -25,8 +25,10 @@ kernel/           - Core kernel logic
 lib/              - Utility libraries for C components
 rust_kernel/      - Rust kernel components
   ├─ memory/      - Memory management implementation
+  ├─ syscall/     - System calls implementation
   └─ lib.rs       - Rust entry point and FFI interface
-tests/            - Test cases and debugging tools
+linker.ld         - Defines memory layout for program execution
+Makefile          - Automates building and cleaning the project.
 ```
 
 ## Quick Start
@@ -46,6 +48,10 @@ make qemu
 ## Usage
 
 For detailed instructions on building, running and extending CPOS, see [USAGE.md](docs/USAGE.md)
+
+## License
+
+[MIT](LICENSE)
 
 ## Interrupt Handling
 
@@ -135,6 +141,56 @@ void* ptr = rust_heap_alloc(size);
 rust_heap_free(ptr);
 ```
 
-## License
+## System Call Interface
 
-[MIT](LICENSE)
+CPOS provides a robust system call interface allowing user programs to securely interact with kernel services. The system call mechanism follows ARM EABI conventions and leverages the hardware's SVC (Supervisor Call) instruction.
+
+### Syscall Architecture
+
+- Dual Interface: System calls can be invoked via C functions or direct SVC instructions
+- Language: Core implementation in Rust for memory safety and robust error handling
+- Stack-Based Arguments: Follows ARM EABI calling conventions
+
+### Available System Calls
+
+| Number | Name      | Description                      | Arguments          |
+|--------|-----------|----------------------------------|--------------------|
+| 1      | SYS_WRITE | Write data to output device      | fd, buffer, length |
+| 2      | SYS_READ  | Read data from input device      | fd, buffer, length |
+| 10     | SYS_EXIT  | Terminate current process        | exit_code          |
+| 11     | SYS_SLEEP | Sleep for specified milliseconds | ms                 |
+| 20     | SYS_ALLOC | Allocate memory                  | size               |
+| 21     | SYS_FREE  | Free allocated memory            | pointer            |
+
+### Usage Examples
+
+From C Code:
+
+```c
+// Write to standard output
+const char *message = "Hello, World!";
+int result = rust_syscall(SYS_WRITE, 1, (uint32_t)message, 13);
+
+// Allocate memory
+uint32_t ptr = rust_syscall(SYS_ALLOC, 1024, 0, 0);
+if (ptr > 0) {
+    // Use allocated memory
+    rust_syscall(SYS_FREE, ptr, 0, 0);
+}
+```
+
+Using SVC instruction directly:
+
+```c
+const char *message = "Hello from user space!";
+__asm volatile(
+    "mov r0, #1\n"        // SYS_WRITE syscall number
+    "mov r1, #1\n"        // fd = 1 (stdout)
+    "ldr r2, %[msg]\n"    // buffer address
+    "mov r3, #21\n"       // length of message
+    "svc #0\n"            // SVC instruction
+    :
+    : [msg] "m"(message)
+    : "r0", "r1", "r2", "r3", "memory"
+);
+```
