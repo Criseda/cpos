@@ -68,11 +68,11 @@ CPOS uses the standard ARM Cortex-M3 interrupt vector system for handling except
 
 The key vector entries include:
 
-- **0x00000000**: Initial Stack Pointer - Stack location for exceptions
-- **0x00000004**: Reset_Handler - System reset entry point
-- **0x00000008**: NMI_Handler - Non-maskable interrupt
-- **0x0000000C**: HardFault_Handler - All classes of faults
-- **0x0000002C**: SVC_Handler - Supervisor call (system calls)
+- **Offset 0x00**: Initial Stack Pointer - Stack location for exceptions
+- **Offset 0x04**: Reset_Handler - System reset entry point
+- **Offset 0x08**: NMI_Handler - Non-maskable interrupt
+- **Offset 0x0C**: HardFault_Handler - All classes of faults
+- **Offset 0x2C**: SVC_Handler - Supervisor call (system calls)
 
 ### Implementation
 
@@ -89,24 +89,33 @@ The key vector entries include:
 
 ### Usage Example
 
-Implementing a custom SVC handler:
+#### Implementing a Custom SVC Handler
+
+In CPOS, the `SVC_Handler` is implemented in assembly and delegates system call handling to a Rust function (`rust_handle_svc`). The handler determines the stack pointer (MSP or PSP) and passes the system call number and arguments to the Rust handler.
 
 ```c
-void SVC_Handler(void)
+void __attribute__((naked)) SVC_Handler(void)
 {
-    // Identify which system call was requested
-    // Handle the system call
-    // Return to user mode
-    uart_send_string("System call processed\n");
+    __asm volatile(
+        "tst lr, #4\n" // Test bit 2 of EXC_RETURN to determine stack used
+        "ite eq\n" // If-Then-Else block
+        "mrseq r1, msp\n" // If bit 2 is clear, use MSP
+        "mrsne r1, psp\n" // If bit 2 is set, use PSP
+        "push {lr}\n" // Save link register
+        "bl rust_handle_svc\n" // Call Rust handler
+        "pop {pc}\n" // Return
+    );
 }
 ```
 
-Triggering a system call:
+#### Triggering a system call
 
 ```c
 // Generate a supervisor call (SVC) with immediate value #0
 __asm volatile("svc #0");
 ```
+
+This will invoke the `SVC_Handler`, which processes the system call.
 
 ## Memory Management
 

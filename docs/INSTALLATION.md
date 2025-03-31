@@ -6,6 +6,7 @@ This document outlines all prerequisites needed to build and run CPOS, a bare-me
 
 ### Required Software
 
+- **Rust**: Programming language and toolchain for building CPOS
 - **ARM GCC Toolchain**: Cross-compilation toolchain for ARM processors
 - **QEMU**: System emulator for ARM architecture
 - **Make**: Build automation tool
@@ -16,6 +17,9 @@ This document outlines all prerequisites needed to build and run CPOS, a bare-me
 ```bash
 # Update package lists
 sudo apt update
+
+# Install rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Install ARM GCC Toolchain
 sudo apt install gcc-arm-none-eabi binutils-arm-none-eabi
@@ -33,6 +37,9 @@ sudo apt install make git
 # Update package lists
 sudo pacman -Syu
 
+# Install rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
 # Install ARM GCC Toolchain
 sudo pacman -S arm-none-eabi-gcc arm-none-eabi-binutils
 
@@ -48,6 +55,9 @@ sudo pacman -S make git
 ```bash
 # Install Homebrew if not already installed
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Install rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Install ARM GCC Toolchain
 brew install --cask gcc-arm-embedded
@@ -68,6 +78,7 @@ Download WSL2, then use the Ubuntu guide.
 Verify your installation by checking that the following commands work:
 
 ```bash
+cargo --version
 arm-none-eabi-gcc --version
 qemu-system-arm --version
 make --version
