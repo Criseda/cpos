@@ -15,6 +15,11 @@ pub const SYS_READ: u32 = 2;
 // Process operations
 pub const SYS_EXIT: u32 = 10;
 pub const SYS_SLEEP: u32 = 11;
+pub const SYS_FORK: u32 = 12;
+pub const SYS_GETPID: u32 = 13;
+pub const SYS_YIELD: u32 = 14;
+pub const SYS_WAIT: u32 = 15;
+pub const SYS_WAITPID: u32 = 16;
 
 // Memory operations
 pub const SYS_ALLOC: u32 = 20;
