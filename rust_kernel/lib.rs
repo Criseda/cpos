@@ -9,16 +9,16 @@
 //! This crate provides Rust implementations of kernel components
 //! that interface with the existing C kernel.
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 pub mod memory;
 pub mod syscall;
-
-use core::panic::PanicInfo;
+mod uart;
 
 // Required for no_std environments
+#[cfg(not(test))]
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
@@ -44,18 +44,34 @@ pub extern "C" fn rust_heap_alloc(size: usize) -> *mut u8 {
 }
 
 /// Free previously allocated memory
+///
+/// Returns 0 on success, -1 for a pointer the allocator did not hand out
+/// and -2 for a double free.
 #[no_mangle]
-pub extern "C" fn rust_heap_free(ptr: *mut u8) {
-    // We trust the C code to only free valid pointers
-    unsafe {
-        memory::free(ptr);
+pub extern "C" fn rust_heap_free(ptr: *mut u8) -> i32 {
+    match unsafe { memory::free(ptr) } {
+        Ok(()) => 0,
+        Err(memory::FreeError::InvalidPointer) => -1,
+        Err(memory::FreeError::DoubleFree) => -2,
     }
+}
+
+/// Number of bytes currently free on the heap
+#[no_mangle]
+pub extern "C" fn rust_heap_free_bytes() -> usize {
+    memory::stats().free_bytes
+}
+
+/// Number of blocks on the free list (1 means fully coalesced)
+#[no_mangle]
+pub extern "C" fn rust_heap_free_blocks() -> usize {
+    memory::stats().free_blocks
 }
 
 /// Process a system call from C code
 ///
 /// This function is called by the C SVC handler
 #[no_mangle]
-pub extern "C" fn rust_syscall(number: u32, arg1: u32, arg2: u32, arg3: u32) -> i32 {
+pub extern "C" fn rust_syscall(number: usize, arg1: usize, arg2: usize, arg3: usize) -> isize {
     syscall::handle_syscall(number, arg1, arg2, arg3)
 }

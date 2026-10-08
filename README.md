@@ -84,7 +84,7 @@ The key vector entries include:
 ### Exception Types
 
 - **System Exceptions**: Reset, NMI, HardFault, etc.
-- **SVC (Supervisor Call)**: Used for system calls from user to kernel mode
+- **SVC (Supervisor Call)**: Entry point for system calls
 - **Peripheral Interrupts**: For device-specific interrupt handling
 
 ### Usage Example
@@ -125,9 +125,10 @@ CPOS uses a hybrid approach to memory management, combining C and Rust:
 - **Language**: Implemented in Rust for memory safety
 - **Features**:
   - Thread-safe (mutex-protected)
-  - First-fit allocation strategy
-  - Block splitting to reduce fragmentation
-  - Size tracking for proper deallocation
+  - First-fit allocation strategy, 8-byte aligned blocks
+  - Block splitting and coalescing of neighbouring free blocks
+  - Rejects double frees and pointers it did not hand out
+  - Usage counters (`rust_heap_free_bytes`, `rust_heap_free_blocks`)
 
 ### C-Rust Integration
 
@@ -140,9 +141,24 @@ rust_init_heap(HEAP_START, HEAP_SIZE);
 // Allocate memory
 void* ptr = rust_heap_alloc(size);
 
-// Free memory
+// Free memory (0 on success, -1 invalid pointer, -2 double free)
 rust_heap_free(ptr);
 ```
+
+### Testing
+
+The allocator and syscall dispatcher have host-side unit tests, including a
+randomized stress test that checks after every operation that no bytes are
+lost and the free list stays sorted and coalesced:
+
+```bash
+cd rust_kernel
+cargo test
+```
+
+The kernel also runs a leak check at boot (visible with `make qemu`): after
+thousands of mixed alloc/free cycles the heap must be back to a single free
+block of its original size.
 
 ## System Call Interface
 
@@ -156,14 +172,17 @@ CPOS provides a robust system call interface allowing user programs to securely 
 
 ### Available System Calls
 
-| Number | Name      | Description                      | Arguments          |
-|--------|-----------|----------------------------------|--------------------|
-| 1      | SYS_WRITE | Write data to output device      | fd, buffer, length |
-| 2      | SYS_READ  | Read data from input device      | fd, buffer, length |
-| 10     | SYS_EXIT  | Terminate current process        | exit_code          |
-| 11     | SYS_SLEEP | Sleep for specified milliseconds | ms                 |
-| 20     | SYS_ALLOC | Allocate memory                  | size               |
-| 21     | SYS_FREE  | Free allocated memory            | pointer            |
+| Number | Name      | Description                                     | Arguments          | Status                    |
+|--------|-----------|-------------------------------------------------|--------------------|---------------------------|
+| 1      | SYS_WRITE | Write bytes to UART (fd 1)                      | fd, buffer, length | Implemented               |
+| 2      | SYS_READ  | Read from UART (fd 0) up to length or a newline | fd, buffer, length | Implemented               |
+| 10     | SYS_EXIT  | Terminate current process                       | exit_code          | Planned (needs scheduler) |
+| 11     | SYS_SLEEP | Sleep for specified milliseconds                | ms                 | Planned (needs scheduler) |
+| 20     | SYS_ALLOC | Allocate memory                                 | size               | Implemented               |
+| 21     | SYS_FREE  | Free allocated memory                           | pointer            | Implemented               |
+
+Errors are returned as negative values: `-1` invalid syscall, `-2` invalid
+argument, `-3` not implemented, `-4` out of memory, `-5` double free.
 
 ### Usage Examples
 
@@ -182,18 +201,17 @@ if (ptr > 0) {
 }
 ```
 
-Using SVC instruction directly:
+Using the SVC instruction directly (number in r0, arguments in r1-r3, result
+back in r0):
 
 ```c
-const char *message = "Hello from user space!";
-__asm volatile(
-    "mov r0, #1\n"        // SYS_WRITE syscall number
-    "mov r1, #1\n"        // fd = 1 (stdout)
-    "ldr r2, %[msg]\n"    // buffer address
-    "mov r3, #21\n"       // length of message
-    "svc #0\n"            // SVC instruction
-    :
-    : [msg] "m"(message)
-    : "r0", "r1", "r2", "r3", "memory"
-);
+register uint32_t r0 __asm__("r0") = SYS_WRITE;
+register uint32_t r1 __asm__("r1") = 1;              // fd = 1 (stdout)
+register uint32_t r2 __asm__("r2") = (uint32_t)message;
+register uint32_t r3 __asm__("r3") = length;
+__asm volatile("svc #0" : "+r"(r0) : "r"(r1), "r"(r2), "r"(r3) : "memory");
+int32_t result = (int32_t)r0;
 ```
+
+The kernel does not drop to unprivileged mode yet, so SVC currently goes
+from privileged thread mode to handler mode.
