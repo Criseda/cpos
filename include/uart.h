@@ -20,5 +20,7 @@ void uart_init(uint32_t baudrate);
 void uart_send_char(char c);
 void uart_send_string(const char *str);
 char uart_receive_char(void);
+void uart_mark_scheduler_started(void);
+uint32_t uart_privileged_writes(void);
 
 #endif /* UART_H */

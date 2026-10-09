@@ -24,6 +24,7 @@ KERNEL_DIR = kernel
 INCLUDE_DIR = include
 LIB_DIR = lib
 INIT_DIR = init
+USER_DIR = user
 RUST_DIR = rust_kernel
 
 # Rust settings
@@ -32,7 +33,8 @@ RUST_LIB = $(RUST_DIR)/target/$(RUST_TARGET)/release/librust_kernel.a
 
 # Source files
 BOOTLOADER_SRC = $(BOOTLOADER_DIR)/bootloader.s
-KERNEL_SRC = $(KERNEL_DIR)/kernel.c $(KERNEL_DIR)/vectors.c
+KERNEL_SRC = $(wildcard $(KERNEL_DIR)/*.c)
+USER_SRC = $(wildcard $(USER_DIR)/*.c)
 INIT_SRC = $(INIT_DIR)/init.c
 LIB_SRC = $(wildcard $(LIB_DIR)/*.c)
 
@@ -40,6 +42,7 @@ LIB_SRC = $(wildcard $(LIB_DIR)/*.c)
 BOOTLOADER_OBJ = $(BOOTLOADER_SRC:.s=.o)
 KERNEL_OBJ = $(KERNEL_SRC:.c=.o)
 INIT_OBJ = $(INIT_SRC:.c=.o)
+USER_OBJ = $(USER_SRC:.c=.o)
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
 # Linker script
@@ -49,7 +52,8 @@ LD_SCRIPT = linker.ld
 ASFLAGS = -mcpu=cortex-m3 -mthumb
 
 # Compiler flags
-CFLAGS = $(ASFLAGS) -nostdlib -ffreestanding -Wall -Wextra -I$(INCLUDE_DIR) -Os
+# No loop-to-memcpy/memset rewriting: there is no libc to provide them
+CFLAGS = $(ASFLAGS) -nostdlib -ffreestanding -fno-tree-loop-distribute-patterns -Wall -Wextra -I$(INCLUDE_DIR) -Os
 LDFLAGS = -T $(LD_SCRIPT) -nostdlib
 
 # QEMU settings
@@ -70,13 +74,13 @@ all: $(TARGET)
 %.o: %.s
 	$(AS) $(ASFLAGS) -o $@ $<
 
-# Rule to build the Rust library
-$(RUST_LIB):
+# Rule to build the Rust library; always ask cargo, it knows what changed
+$(RUST_LIB): FORCE
 	@echo "Building Rust components..."
 	@cd $(RUST_DIR) && rustup target add $(RUST_TARGET) 2>/dev/null || true
 	@cd $(RUST_DIR) && cargo build --release --target $(RUST_TARGET)
 
-$(TARGET): $(BOOTLOADER_OBJ) $(KERNEL_OBJ) $(INIT_OBJ) $(LIB_OBJ) $(RUST_LIB)
+$(TARGET): $(BOOTLOADER_OBJ) $(KERNEL_OBJ) $(INIT_OBJ) $(USER_OBJ) $(LIB_OBJ) $(RUST_LIB)
 	$(CC) $(ASFLAGS) -nostdlib -ffreestanding -T $(LD_SCRIPT) -Wl,--no-warn-mismatch -o $@ $^
 	$(OBJCOPY) -O binary $@ cpos.bin
 
@@ -94,8 +98,10 @@ qemu-debug:
 	$(QEMU) $(QEMU_ARGS) -kernel $(TARGET) $(QEMU_DEBUG)
 
 clean:
-	rm -f $(BOOTLOADER_OBJ) $(KERNEL_OBJ) $(INIT_OBJ) $(LIB_OBJ) $(TARGET) cpos.bin
+	rm -f $(BOOTLOADER_OBJ) $(KERNEL_OBJ) $(INIT_OBJ) $(USER_OBJ) $(LIB_OBJ) $(TARGET) cpos.bin
 	@echo "Cleaning Rust artifacts..."
 	@cd $(RUST_DIR) && cargo clean
 
-.PHONY: all clean qemu qemu-gdb qemu-debug 
+FORCE:
+
+.PHONY: all clean qemu qemu-gdb qemu-debug FORCE 

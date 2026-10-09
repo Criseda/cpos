@@ -13,6 +13,9 @@
 
 #include <stdint.h>
 
+/* Provided by linker.ld */
+extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss, _stack_top;
+
 /* Declarations for interrupt handlers */
 void Reset_Handler(void);
 void NMI_Handler(void) __attribute__((weak, alias("Default_Handler")));
@@ -30,7 +33,7 @@ void SysTick_Handler(void) __attribute__((weak, alias("Default_Handler")));
  * Will align with .vectors section in linker script
  */
 __attribute__((section(".vectors"))) void (*const g_pfnVectors[])(void) = {
-	(void (*)(void))(0x20007F00), 	/* Initial stack pointer value */
+	(void (*)(void))(&_stack_top), 	/* Initial stack pointer value */
 	Reset_Handler, 			/* Reset handler */
 	NMI_Handler,			/* NMI handler */
 	HardFault_Handler, 		/* Hard fault handler */
@@ -57,6 +60,17 @@ void Default_Handler(void)
 extern void init(void);
 void Reset_Handler(void)
 {
+	/* Copy initialised data from flash and zero .bss before any C or
+	 * Rust code relies on its statics */
+	uint32_t *src = &_sidata;
+	uint32_t *dst = &_sdata;
+	while (dst < &_edata) {
+		*dst++ = *src++;
+	}
+	for (dst = &_sbss; dst < &_ebss;) {
+		*dst++ = 0;
+	}
+
 	/* Call the init function */
 	init();
 
