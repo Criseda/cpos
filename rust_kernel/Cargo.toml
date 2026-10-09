@@ -6,7 +6,8 @@ edition = "2021"  # Using 2021 edition for better stability
 [lib]
 name = "rust_kernel"
 path = "lib.rs"
-crate-type = ["staticlib"]
+# rlib lets host tools (cargo-fuzz) link the kernel as a normal crate
+crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 spin = "0.10.0"

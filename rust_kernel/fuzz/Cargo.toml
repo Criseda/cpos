@@ -1,0 +1,39 @@
+[package]
+name = "rust_kernel-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.rust_kernel]
+path = ".."
+
+# Keep this crate out of any parent workspace
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "allocator"
+path = "fuzz_targets/allocator.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "allocator_hostile"
+path = "fuzz_targets/allocator_hostile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "syscalls"
+path = "fuzz_targets/syscalls.rs"
+test = false
+doc = false
+bench = false

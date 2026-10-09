@@ -112,6 +112,10 @@ fn kernel_call(k: &mut Kernel, number: usize, arg1: usize, arg2: usize, arg3: us
 
 /// A call made by the task in `slot`
 fn task_call(k: &mut Kernel, slot: usize, number: usize, arg1: usize, arg2: usize, arg3: usize) -> Result<Outcome, usize> {
+    if k.is_idle(slot) && number != SYS_YIELD && number != SYS_TICKS {
+        // The scheduler falls back on idle, so idle must never block
+        return Err(ERROR_INVALID_SYSCALL);
+    }
     let value = match number {
         SYS_WRITE => {
             if arg1 != STDOUT || arg2 == 0 || arg3 > MAX_IO_SIZE {

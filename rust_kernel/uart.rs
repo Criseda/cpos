@@ -8,7 +8,7 @@
 //!
 //! Host tests swap the driver for in-memory buffers.
 
-#[cfg(not(test))]
+#[cfg(target_arch = "arm")]
 mod imp {
     extern "C" {
         fn uart_send_char(c: u8);
@@ -41,7 +41,7 @@ mod imp {
     }
 }
 
-#[cfg(test)]
+#[cfg(not(target_arch = "arm"))]
 pub(crate) mod imp {
     extern crate std;
 

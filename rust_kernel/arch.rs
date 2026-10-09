@@ -12,7 +12,7 @@
 /// Number of MPU regions the kernel reprograms on every context switch
 pub const SWITCHED_REGIONS: usize = 2;
 
-#[cfg(not(test))]
+#[cfg(target_arch = "arm")]
 mod imp {
     use core::arch::asm;
     use core::ptr::{read_volatile, write_volatile};
@@ -127,7 +127,7 @@ mod imp {
     }
 }
 
-#[cfg(test)]
+#[cfg(not(target_arch = "arm"))]
 pub(crate) mod imp {
     extern crate std;
 

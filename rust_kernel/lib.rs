@@ -35,7 +35,7 @@ fn halt(msg: &[u8], value: Option<u32>) -> ! {
 }
 
 // Required for no_std environments
-#[cfg(not(test))]
+#[cfg(all(not(test), target_arch = "arm"))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     halt(b"Rust panic", None)

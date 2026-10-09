@@ -63,7 +63,10 @@ pub(crate) struct LinkedListAllocator {
     heap_end: usize,
 }
 
-// The allocator is only ever reached through the global mutex
+// SAFETY: the raw pointers refer to heap memory the allocator owns
+// exclusively; every instance is reached through a mutex (the global heap)
+// or through the kernel state mutex (task heaps), so it is never used from
+// two contexts at once.
 unsafe impl Send for LinkedListAllocator {}
 
 impl LinkedListAllocator {
@@ -331,13 +334,35 @@ mod tests {
 
     const HEAP_SIZE: usize = 24 * 1024;
 
+    /// Miri interprets every step, so it runs fewer iterations of the same
+    /// tests
+    const SCALE: usize = if cfg!(miri) { 50 } else { 1 };
+
     #[repr(C, align(8))]
     struct Heap([u8; HEAP_SIZE]);
 
-    fn new_heap() -> (Box<Heap>, LinkedListAllocator) {
-        let mut mem = Box::new(Heap([0; HEAP_SIZE]));
+    /// Test heap memory, held only as a raw pointer. Moving a `Box` or
+    /// borrowing it again would invalidate the pointers the allocator has
+    /// derived from it (Miri checks this).
+    struct HeapMem(*mut Heap);
+
+    impl HeapMem {
+        fn start(&self) -> *mut u8 {
+            self.0.cast()
+        }
+    }
+
+    impl Drop for HeapMem {
+        fn drop(&mut self) {
+            // SAFETY: created by `Box::into_raw` in `new_heap`
+            drop(unsafe { Box::from_raw(self.0) });
+        }
+    }
+
+    fn new_heap() -> (HeapMem, LinkedListAllocator) {
+        let mem = HeapMem(Box::into_raw(Box::new(Heap([0; HEAP_SIZE]))));
         let mut a = LinkedListAllocator::new();
-        unsafe { a.init(mem.0.as_mut_ptr() as usize, HEAP_SIZE) };
+        unsafe { a.init(mem.start() as usize, HEAP_SIZE) };
         (mem, a)
     }
 
@@ -398,7 +423,7 @@ mod tests {
     fn repeated_cycles_do_not_leak() {
         let (_mem, mut a) = new_heap();
         for size in [1, 7, 8, 13, 128, 1000] {
-            for _ in 0..10_000 {
+            for _ in 0..10_000 / SCALE {
                 let p = a.allocate(size);
                 assert!(!p.is_null());
                 unsafe { a.deallocate(p).unwrap() };
@@ -451,15 +476,15 @@ mod tests {
 
     #[test]
     fn rejects_bad_frees() {
-        let (mut mem, mut a) = new_heap();
+        let (mem, mut a) = new_heap();
         let p = a.allocate(64);
         let q = a.allocate(64);
         unsafe {
             a.deallocate(p).unwrap();
             assert_eq!(a.deallocate(p), Err(FreeError::DoubleFree));
             assert_eq!(a.deallocate(p.add(1)), Err(FreeError::InvalidPointer));
-            assert_eq!(a.deallocate(mem.0.as_mut_ptr()), Err(FreeError::InvalidPointer));
-            let outside = (mem.0.as_mut_ptr() as usize + HEAP_SIZE + 64) as *mut u8;
+            assert_eq!(a.deallocate(mem.start()), Err(FreeError::InvalidPointer));
+            let outside = (mem.start() as usize + HEAP_SIZE + 64) as *mut u8;
             assert_eq!(a.deallocate(outside), Err(FreeError::InvalidPointer));
             a.deallocate(q).unwrap();
         }
@@ -496,12 +521,12 @@ mod tests {
 
     #[test]
     fn randomized_stress() {
-        for seed in 1..=20u64 {
+        for seed in 1..=(20 / SCALE.min(10)) as u64 {
             let (_mem, mut a) = new_heap();
             let mut rng = XorShift(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
             let mut live: Vec<(*mut u8, usize, u8)> = Vec::new();
 
-            for step in 0..10_000 {
+            for step in 0..10_000 / SCALE {
                 if live.is_empty() || rng.below(100) < 55 {
                     let max = if rng.below(10) == 0 { 4096 } else { 256 };
                     let size = 1 + rng.below(max);

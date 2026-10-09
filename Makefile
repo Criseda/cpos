@@ -78,7 +78,8 @@ all: $(TARGET)
 $(RUST_LIB): FORCE
 	@echo "Building Rust components..."
 	@cd $(RUST_DIR) && rustup target add $(RUST_TARGET) 2>/dev/null || true
-	@cd $(RUST_DIR) && cargo build --release --target $(RUST_TARGET)
+	@# staticlib only: building the rlib too (for cargo-fuzz) would disable LTO
+	@cd $(RUST_DIR) && cargo rustc --release --target $(RUST_TARGET) --crate-type staticlib
 
 $(TARGET): $(BOOTLOADER_OBJ) $(KERNEL_OBJ) $(INIT_OBJ) $(USER_OBJ) $(LIB_OBJ) $(RUST_LIB)
 	$(CC) $(ASFLAGS) -nostdlib -ffreestanding -T $(LD_SCRIPT) -Wl,--no-warn-mismatch -o $@ $^

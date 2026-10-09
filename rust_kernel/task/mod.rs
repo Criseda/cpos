@@ -137,17 +137,17 @@ pub static KERNEL: Mutex<Kernel> = Mutex::new(Kernel::new());
 
 /// Throwaway stack PendSV can save registers to when the outgoing task no
 /// longer exists (first switch, exit, fault)
-#[cfg(not(test))]
+#[cfg(target_arch = "arm")]
 static mut SCRATCH_STACK: [u64; 8] = [0; 8];
 
 fn scratch_stack_top() -> usize {
-    #[cfg(not(test))]
+    #[cfg(target_arch = "arm")]
     {
         // Only the address is taken; PendSV is the only writer and the
         // contents are never read
         core::ptr::addr_of_mut!(SCRATCH_STACK) as usize + 64
     }
-    #[cfg(test)]
+    #[cfg(not(target_arch = "arm"))]
     {
         0
     }
@@ -186,6 +186,11 @@ impl Kernel {
 
     pub fn current(&self) -> Option<usize> {
         self.current
+    }
+
+    /// The idle task must always be runnable, so it may not block or exit
+    pub fn is_idle(&self, slot: usize) -> bool {
+        self.tasks[slot].flags & TASK_IDLE != 0
     }
 
     /// Queue a task to run once the scheduler starts, or as soon as a slot
@@ -610,12 +615,21 @@ mod tests {
 
     struct Fixture {
         k: Box<Kernel>,
-        mem: Box<Slots>,
+        /// Raw so that moving the fixture does not invalidate the
+        /// addresses the kernel holds (Miri checks this)
+        mem: *mut Slots,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            // SAFETY: created by `Box::into_raw` in `kernel_with`
+            drop(unsafe { Box::from_raw(self.mem) });
+        }
     }
 
     impl Fixture {
         fn base(&self) -> usize {
-            self.mem.0.as_ptr() as usize
+            self.mem as usize
         }
         fn slot_addr(&self, slot: usize, offset: usize) -> usize {
             self.base() + slot * SLOT_SIZE + offset
@@ -626,14 +640,14 @@ mod tests {
     const TRAMPOLINE: usize = 0x2001;
 
     fn kernel_with(tasks: &[(&'static [u8], u32)]) -> Fixture {
-        let mem = Box::new(Slots([0; SLOT_SIZE * MAX_TASKS]));
+        let mem = Box::into_raw(Box::new(Slots([0; SLOT_SIZE * MAX_TASKS])));
         let mut k = Box::new(Kernel::new());
         k.register(b"idle", ENTRY, 0, TASK_IDLE).unwrap();
         for &(name, flags) in tasks {
             k.register(name, ENTRY, 0, flags).unwrap();
         }
         let cfg = Config {
-            slot_base: mem.0.as_ptr() as usize,
+            slot_base: mem as usize,
             flash_start: FLASH.as_ptr() as usize,
             flash_end: FLASH.as_ptr() as usize + FLASH.len(),
             exit_trampoline: TRAMPOLINE,
