@@ -1,5 +1,7 @@
 # CPOS - ARM Cortex-M3 Operating System
 
+[![CI](https://github.com/Criseda/cpos/actions/workflows/ci.yml/badge.svg)](https://github.com/Criseda/cpos/actions/workflows/ci.yml)
+
 ## Version: 0.3.0
 
 Bare-metal ARM OS designed for embedded systems with ARM Cortex-M3 processors.
@@ -268,6 +270,13 @@ docker build -t cpos-dev docker
 docker run --rm -v "$PWD:/src" -w /src cpos-dev make
 docker run --rm -v "$PWD:/src" -w /src cpos-dev bash scripts/qemu_test.sh
 ```
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on pushes to `main` and `dev` and on pull
+requests, inside the same image: host tests, the unsafe audit, the build
+and the QEMU boot check in one job, Miri in another, and 60 seconds of
+fuzzing per target. A fuzz job that finds a crash uploads the input.
 
 The boot run first exercises the allocator and syscalls from the kernel,
 then starts the scheduler and runs unprivileged test tasks: preemption,

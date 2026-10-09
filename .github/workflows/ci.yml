@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Every job runs inside the image from docker/Dockerfile, built once and
+# cached, so CI checks exactly what the README's "Verified claims" lists.
+env:
+  IMAGE: cpos-dev
+
+jobs:
+  test:
+    name: Host tests, unsafe audit, QEMU boot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: docker
+          tags: ${{ env.IMAGE }}
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Host unit tests
+        run: docker run --rm -v "$PWD:/src" -w /src/rust_kernel $IMAGE cargo test
+      - name: Unsafe audit
+        run: docker run --rm -v "$PWD:/src" -w /src $IMAGE python3 scripts/unsafe_audit.py rust_kernel
+      - name: Build
+        run: docker run --rm -v "$PWD:/src" -w /src $IMAGE make
+      - name: Boot tests in QEMU
+        run: docker run --rm -v "$PWD:/src" -w /src $IMAGE bash scripts/qemu_test.sh cpos.elf
+
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: docker
+          tags: ${{ env.IMAGE }}
+          load: true
+          cache-from: type=gha
+      - name: Unit tests under Miri
+        run: >
+          docker run --rm -v "$PWD:/src" -w /src/rust_kernel
+          -e MIRIFLAGS=-Zmiri-permissive-provenance
+          $IMAGE cargo +nightly miri test
+
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [allocator, allocator_hostile, syscalls]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: docker
+          tags: ${{ env.IMAGE }}
+          load: true
+          cache-from: type=gha
+      - name: Fuzz for 60 seconds
+        run: >
+          docker run --rm -v "$PWD:/src" -w /src/rust_kernel/fuzz $IMAGE
+          cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=60 -max_len=4096
+      - name: Keep the crashing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: rust_kernel/fuzz/artifacts
