@@ -10,7 +10,7 @@
 //! can be checked without a CPU.
 
 /// Number of MPU regions the kernel reprograms on every context switch
-pub const SWITCHED_REGIONS: usize = 2;
+pub const SWITCHED_REGIONS: usize = 3;
 
 #[cfg(target_arch = "arm")]
 mod imp {

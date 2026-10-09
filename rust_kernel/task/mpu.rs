@@ -13,6 +13,12 @@
 //! | 0      | Flash (code, rodata)| read + execute          |
 //! | 1      | The task's own slot | read + write, no execute|
 //! | 2      | UART0 registers     | read + write, console only |
+//! | 3      | Stack guard (32 B)  | none                    |
+//!
+//! Region 3 sits inside region 1, between the task's heap and the bottom
+//! of its stack. The higher-numbered region wins where they overlap, so a
+//! stack that grows past its limit faults on the first push into the
+//! guard instead of overwriting the heap.
 //!
 //! Everything else (kernel data, kernel heap, other tasks' slots, the
 //! kernel stack, peripherals) has no region, so an unprivileged access
@@ -28,6 +34,7 @@ const RBAR_VALID: u32 = 1 << 4;
 const RASR_ENABLE: u32 = 1;
 const XN: u32 = 1 << 28;
 const AP_FULL: u32 = 0b011 << 24;
+const AP_PRIV_ONLY: u32 = 0b001 << 24;
 const AP_READ_ONLY: u32 = 0b110 << 24;
 /// Normal memory, write-back (TEX=000, C=1, B=1)
 const NORMAL: u32 = (1 << 17) | (1 << 16);
@@ -76,6 +83,14 @@ pub const fn task_slot(base: u32, size: u32) -> Option<Region> {
     Region::new(1, base, size, AP_FULL | XN | NORMAL)
 }
 
+/// Bytes of the stack guard: the smallest MPU region
+pub const STACK_GUARD_SIZE: u32 = 32;
+
+/// Region 3: no unprivileged access to `[base, base + STACK_GUARD_SIZE)`
+pub const fn stack_guard(base: u32) -> Option<Region> {
+    Region::new(3, base, STACK_GUARD_SIZE, AP_PRIV_ONLY | XN | NORMAL)
+}
+
 /// Region 2: UART0, only mapped for the console server
 pub const fn uart() -> Option<Region> {
     Region::new(2, UART0_BASE, UART0_SIZE, AP_FULL | XN | DEVICE)
@@ -111,5 +126,16 @@ mod tests {
         assert!(task_slot(0x2000_3000, 3000).is_none());
         assert!(task_slot(0x2000_3000, 16).is_none());
         assert!(uart().is_some());
+    }
+
+    #[test]
+    fn encodes_stack_guard() {
+        let r = stack_guard(0x2000_3400).unwrap();
+        assert_eq!(r.rbar, 0x2000_3400 | 0x10 | 3);
+        // SIZE field 4 means 2^(4+1) = 32 bytes
+        assert_eq!((r.rasr >> 1) & 0x1F, 4);
+        assert_eq!((r.rasr >> 24) & 0b111, 0b001);
+        assert_ne!(r.rasr & XN, 0);
+        assert!(stack_guard(0x2000_3410).is_none());
     }
 }

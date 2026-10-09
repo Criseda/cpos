@@ -170,7 +170,7 @@ pub extern "C" fn rust_fault(exc_return: usize, exception: usize) {
         None => halt(b"fault while kernel state locked", Some(cfsr)),
     };
     match k.current() {
-        Some(slot) => k.task_fault(slot, exception, addr),
+        Some(slot) => k.task_fault(slot, exception, cfsr, addr),
         None => halt(b"task fault with no current task", Some(cfsr)),
     }
 }

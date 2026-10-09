@@ -29,9 +29,13 @@ use spin::Mutex;
 
 pub const MAX_TASKS: usize = 8;
 pub const MAX_PENDING: usize = 16;
-/// Bytes of RAM per task: heap below, stack above
+/// Bytes of RAM per task: heap below, stack guard, stack above
 pub const SLOT_SIZE: usize = 2048;
 pub const TASK_HEAP_SIZE: usize = 1024;
+/// No-access gap between a task's heap and the bottom of its stack
+pub const STACK_GUARD: usize = mpu::STACK_GUARD_SIZE as usize;
+/// CFSR.MSTKERR: the MPU stopped exception entry pushing onto the stack
+const CFSR_MSTKERR: u32 = 1 << 4;
 pub const TICK_MS: usize = 10;
 /// Sender id the console sees for kernel log messages
 pub const KERNEL_SENDER: usize = 0;
@@ -224,6 +228,19 @@ impl Kernel {
         (start, start + SLOT_SIZE)
     }
 
+    /// The stack guard of `slot`: just above the heap
+    fn guard_range(&self, slot: usize) -> (usize, usize) {
+        let guard = self.slot_range(slot).0 + TASK_HEAP_SIZE;
+        (guard, guard + STACK_GUARD)
+    }
+
+    /// `[addr, addr + len)` is in the task's slot and clear of its guard
+    fn in_own_slot(&self, slot: usize, addr: usize, len: usize) -> bool {
+        let (start, end) = self.slot_range(slot);
+        let (guard, guard_end) = self.guard_range(slot);
+        in_range(addr, len, start, guard) || in_range(addr, len, guard_end, end)
+    }
+
     /// Move queued tasks into free slots, oldest first
     fn spawn_pending(&mut self) {
         while let Some(spawn) = self.pending[0] {
@@ -283,7 +300,8 @@ impl Kernel {
         } else {
             mpu::Region::disabled(2)
         };
-        [own.pair(), uart.pair()]
+        let guard = mpu::stack_guard(self.guard_range(slot).0 as u32).unwrap_or(mpu::Region::disabled(3));
+        [own.pair(), uart.pair(), guard.pair()]
     }
 
     /// PendSV: save the outgoing task's stack pointer, pick the next task,
@@ -341,20 +359,20 @@ impl Kernel {
 
     // ---- user memory checks -------------------------------------------
 
-    /// The calling task may read `[addr, addr + len)`: its own slot or flash
+    /// The calling task may read `[addr, addr + len)`: its own slot (not
+    /// the stack guard) or flash
     pub fn check_readable(&self, slot: usize, addr: usize, len: usize) -> Result<(), usize> {
-        let (start, end) = self.slot_range(slot);
-        if in_range(addr, len, start, end) || in_range(addr, len, self.cfg.flash_start, self.cfg.flash_end) {
+        if self.in_own_slot(slot, addr, len) || in_range(addr, len, self.cfg.flash_start, self.cfg.flash_end) {
             Ok(())
         } else {
             Err(ERROR_BAD_ADDRESS)
         }
     }
 
-    /// The calling task may write `[addr, addr + len)`: its own slot only
+    /// The calling task may write `[addr, addr + len)`: its own slot only,
+    /// not the stack guard
     pub fn check_writable(&self, slot: usize, addr: usize, len: usize) -> Result<(), usize> {
-        let (start, end) = self.slot_range(slot);
-        if in_range(addr, len, start, end) {
+        if self.in_own_slot(slot, addr, len) {
             Ok(())
         } else {
             Err(ERROR_BAD_ADDRESS)
@@ -514,7 +532,9 @@ impl Kernel {
     // ---- task death ------------------------------------------------------
 
     /// A task faulted. Logs it, kills the task and schedules another.
-    pub fn task_fault(&mut self, slot: usize, exception: usize, addr: Option<usize>) {
+    pub fn task_fault(&mut self, slot: usize, exception: usize, cfsr: u32, addr: Option<usize>) {
+        let (guard, guard_end) = self.guard_range(slot);
+        let overflow = cfsr & CFSR_MSTKERR != 0 || addr.is_some_and(|a| guard <= a && a < guard_end);
         let t = &self.tasks[slot];
         let kind: &[u8] = match exception {
             3 => b"HardFault",
@@ -527,6 +547,9 @@ impl Kernel {
         line.bytes(b"  [fault] ").bytes(t.name).bytes(b": ").bytes(kind);
         if let Some(a) = addr {
             line.bytes(b" at ").hex(a as u32);
+        }
+        if overflow {
+            line.bytes(b" (stack overflow)");
         }
         line.bytes(b", task killed\n");
         let expected = t.flags & TASK_EXPECT_FAULT != 0;
@@ -706,6 +729,9 @@ mod tests {
         assert_eq!(regions[0].0, (base + SLOT_SIZE) as u32 | 0x10 | 1);
         assert_eq!(regions[1].0 & !0x1F, mpu::UART0_BASE);
         assert_eq!(regions[1].1 & 1, 1);
+        let guard = (base + SLOT_SIZE + TASK_HEAP_SIZE) as u32;
+        assert_eq!(regions[2].0, guard | 0x10 | 3, "stack guard above the heap");
+        assert_eq!(regions[2].1 & 1, 1);
         f.k.switch(0);
         let regions = MPU.with(|m| *m.borrow());
         assert_eq!(regions[1].1, 0, "only the console gets the UART");
@@ -777,6 +803,12 @@ mod tests {
         assert_eq!(k.check_readable(1, other, 4), bad);
         assert_eq!(k.check_readable(1, own, SLOT_SIZE), bad, "runs past the slot");
         assert_eq!(k.check_readable(1, usize::MAX - 2, 8), bad);
+        let guard = own - 1100 + TASK_HEAP_SIZE;
+        assert_eq!(k.check_writable(1, guard - 8, 8), Ok(()), "top of the heap");
+        assert_eq!(k.check_writable(1, guard + STACK_GUARD, 8), Ok(()), "bottom of the stack");
+        assert_eq!(k.check_writable(1, guard + 4, 4), bad, "inside the stack guard");
+        assert_eq!(k.check_readable(1, guard - 8, 16), bad, "runs into the stack guard");
+        assert_eq!(k.check_writable(1, guard - 8, 64), bad, "spans the stack guard");
 
         assert_eq!(k.sys_send(1, b_id, other, 4), bad_call);
         assert_eq!(k.sys_recv(1, flash, 4, 0), bad_call);
@@ -819,8 +851,8 @@ mod tests {
     fn faults_are_logged_and_judged() {
         let mut f = kernel_with(&[(b"console", TASK_CONSOLE), (b"bad", TASK_EXPECT_FAULT), (b"oops", 0)]);
         let k = &mut f.k;
-        k.task_fault(2, 4, Some(0x2000_0000));
-        k.task_fault(3, 5, None);
+        k.task_fault(2, 4, 0, Some(0x2000_0000));
+        k.task_fault(3, 5, 0, None);
         let log = drain_log(k);
         assert!(log.contains("bad: MemManage at 0x20000000"));
         assert!(log.contains("  - bad stopped by fault: OK\n"));

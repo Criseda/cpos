@@ -99,18 +99,21 @@ preempt each other while holding kernel state; PendSV runs below them.
 
 ### Memory protection
 
-Each task owns one 2 KB, size-aligned RAM slot: a private 1 KB heap below
-and its stack above. On every switch the kernel programs the MPU so the
-task can reach only:
+Each task owns one 2 KB, size-aligned RAM slot: a private 1 KB heap at the
+bottom, a 32-byte stack guard, and its stack (992 bytes) above. On every
+switch the kernel programs the MPU so the task can reach only:
 
 | Region | Memory | Task access |
 |--------|--------|-------------|
 | 0 | Flash (code, constants) | Read, execute |
 | 1 | The task's own slot | Read, write, no execute |
 | 2 | UART0 registers | Read, write; console server only |
+| 3 | Stack guard, between the heap and the stack | None |
 
 Kernel data, the kernel heap, the kernel stack, other tasks' slots and all
-other peripherals fault. The kernel also checks every pointer a task passes
+other peripherals fault. Region 3 overlaps region 1 and wins, so a stack
+that grows past its limit faults on the guard, and the kernel reports
+`(stack overflow)`, instead of silently overwriting the heap. The kernel also checks every pointer a task passes
 in a system call against the memory that task owns (its slot, or flash for
 read-only buffers) and returns `-6` (bad address) otherwise.
 
@@ -243,7 +246,7 @@ exit. Expected faults are reported as `stopped by fault: OK`.
 
 Measured with Rust 1.99 (host tests), nightly 1.101 (Miri, cargo-fuzz) and
 QEMU 7.2 (`lm3s6965evb`) in a Debian bookworm container. The QEMU boot run
-reports 40 checks OK and 0 FAILED.
+reports 41 checks OK and 0 FAILED.
 
 | Claim | Evidence |
 |-------|----------|
@@ -251,6 +254,7 @@ reports 40 checks OK and 0 FAILED.
 | Preemptive multitasking | QEMU: two busy-looping tasks are each preempted 13-14 times in 30 ticks; a 100 ms sleep under load wakes after exactly 10 ticks |
 | Tasks run unprivileged; system calls switch to privileged handler mode | QEMU: `CONTROL.nPRIV = 1` in tasks, a task cannot clear it, and its write to the SysTick control register has no effect |
 | MPU isolation between tasks and from the kernel | QEMU: tasks touching kernel data, another task's stack or the UART are killed by MemManage faults; the kernel rejects out-of-bounds pointers with `-6` |
+| Stack overflow detection | QEMU: a runaway recursive task is killed by a MemManage fault inside its stack guard, before it reaches its heap |
 | Microkernel-style: the UART driver is an unprivileged server task | QEMU: all task output goes through the console server; privileged UART writes after scheduler start = 0 |
 | No leaks in the allocator | Host tests: 200,000 randomized operations with exact byte accounting and invariant checks after every step; boot test: the heap returns to one block of its original size after 1,000 mixed cycles; Miri: no undefined behaviour in the test suite; fuzzing: 2.4M random alloc/free sequences end fully coalesced |
 | Memory-safety discipline in the Rust core | 31 `unsafe` sites in kernel code (24 blocks, 6 functions, 1 impl), all with a written `SAFETY` justification (`scripts/unsafe_audit.py`); fuzzing: 2.75M random syscall sequences with hostile pointers and 5.7M allocator runs with corrupted headers, with no crash, hang or out-of-bounds write |
@@ -261,6 +265,9 @@ Known limits:
   real Cortex-M3 hardware raises a BusFault. Tasks still cannot change them.
 - `SYS_READ` works only before the scheduler starts; console input for tasks
   would be a request to the console server and is not implemented.
+- The stack guard is 32 bytes. A single function that reserves more stack
+  than that at once can step over it; the allocator's header checks still
+  keep a corrupted heap from leading the kernel outside it.
 - The allocator detects double frees of free memory, but freeing a stale
   pointer into a block that has since been reused (use after free) cannot be
   told apart from a valid free. Even then it never writes outside the heap.

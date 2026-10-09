@@ -255,6 +255,19 @@ static void uart_task(uint32_t arg)
 	report("Non-console task wrote the UART", 0);
 }
 
+/* Unbounded recursion with small frames, as a runaway recursive function
+ * would do: the stack reaches the guard above the heap and faults there */
+static uint32_t __attribute__((noinline)) recurse(uint32_t depth)
+{
+	volatile uint32_t frame[2] = { depth, depth };
+	return recurse(depth + 1) + frame[0] + frame[1];
+}
+
+static void stack_overflow_task(uint32_t arg)
+{
+	report("Stack overflow went undetected", recurse(arg) == 0);
+}
+
 static void heap_task(uint32_t arg)
 {
 	(void)arg;
@@ -326,6 +339,8 @@ void register_user_tasks(void)
 	rust_task_register("other-slot", other_slot_task, 0, TASK_EXPECT_FAULT);
 	rust_task_register("kernel-data", kernel_data_task, 0, TASK_EXPECT_FAULT);
 	rust_task_register("uart-poke", uart_task, 0, TASK_EXPECT_FAULT);
+	rust_task_register("stack-overflow", stack_overflow_task, 0,
+			   TASK_EXPECT_FAULT);
 	rust_task_register("heap", heap_task, 0, 0);
 	rust_task_register("exit", exit_task, 0, 0);
 }
