@@ -12,6 +12,9 @@
 /// Number of MPU regions the kernel reprograms on every context switch
 pub const SWITCHED_REGIONS: usize = 3;
 
+/// UART0 interrupt number on the LM3S6965 (vector 21)
+pub const UART0_IRQ: u32 = 5;
+
 #[cfg(target_arch = "arm")]
 mod imp {
     use core::arch::asm;
@@ -31,6 +34,9 @@ mod imp {
     const MPU_CTRL: usize = 0xE000_ED94;
     const MPU_RBAR: usize = 0xE000_ED9C;
     const MPU_RASR: usize = 0xE000_EDA0;
+    const NVIC_ISER: usize = 0xE000_E100;
+    const NVIC_ICER: usize = 0xE000_E180;
+    const NVIC_IPR: usize = 0xE000_E400;
 
     const PENDSVSET: u32 = 1 << 28;
 
@@ -73,6 +79,23 @@ mod imp {
         write(SHPR1, 0x0080_8080); // MemManage, BusFault, UsageFault
         write(SHPR2, 0x8000_0000); // SVCall
         write(SHPR3, 0x80E0_0000); // SysTick 0x80, PendSV 0xE0
+        // The UART interrupt takes the kernel lock too, so it gets the same
+        // priority and never preempts SVC or SysTick
+        let ipr = NVIC_IPR + (super::UART0_IRQ as usize & !3);
+        let shift = (super::UART0_IRQ % 4) * 8;
+        write(ipr, (read(ipr) & !(0xFF << shift)) | (0x80 << shift));
+    }
+
+    /// Let the interrupt line through to the CPU. A request that came in
+    /// while it was masked stays pending and fires now, so no input is
+    /// missed; at worst the console gets a notification with nothing new.
+    pub fn irq_unmask(irq: u32) {
+        write(NVIC_ISER, 1 << irq);
+    }
+
+    pub fn irq_mask(irq: u32) {
+        write(NVIC_ICER, 1 << irq);
+        barrier();
     }
 
     /// Route MemManage, BusFault and UsageFault to their own handlers
@@ -136,6 +159,7 @@ pub(crate) mod imp {
     std::thread_local! {
         pub static SWITCH_PENDING: Cell<bool> = Cell::new(false);
         pub static PSP: Cell<usize> = Cell::new(0);
+        pub static IRQ_UNMASKED: Cell<bool> = Cell::new(false);
         pub static MPU: RefCell<[(u32, u32); super::SWITCHED_REGIONS]> =
             RefCell::new([(0, 0); super::SWITCHED_REGIONS]);
     }
@@ -149,6 +173,12 @@ pub(crate) mod imp {
     pub fn disable_irq() {}
     pub fn enable_irq() {}
     pub fn set_priorities() {}
+    pub fn irq_unmask(_irq: u32) {
+        IRQ_UNMASKED.with(|u| u.set(true));
+    }
+    pub fn irq_mask(_irq: u32) {
+        IRQ_UNMASKED.with(|u| u.set(false));
+    }
     pub fn enable_fault_handlers() {}
     pub fn start_systick(_reload: u32) {}
     pub fn take_fault_status() -> (u32, Option<usize>) {

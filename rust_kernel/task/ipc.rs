@@ -21,6 +21,14 @@ pub struct Message {
 
 impl Message {
     const EMPTY: Message = Message { from: 0, len: 0, data: [0; MSG_SIZE] };
+
+    /// A copy of `bytes`, cut to one message
+    pub fn new(from: usize, bytes: &[u8]) -> Self {
+        let len = bytes.len().min(MSG_SIZE);
+        let mut msg = Message { from, len, data: [0; MSG_SIZE] };
+        msg.data[..len].copy_from_slice(&bytes[..len]);
+        msg
+    }
 }
 
 /// Fixed-size FIFO of messages addressed to one task

@@ -19,8 +19,17 @@
 #include <stdint.h>
 #include "user.h"
 
-#define UART0_DR (*(volatile uint32_t *)0x4000C000)
-#define UART0_FR (*(volatile uint32_t *)0x4000C018)
+#define UART0_DR  (*(volatile uint32_t *)0x4000C000)
+#define UART0_FR  (*(volatile uint32_t *)0x4000C018)
+#define UART0_IMR (*(volatile uint32_t *)0x4000C038)
+#define UART0_ICR (*(volatile uint32_t *)0x4000C044)
+#define UART_FR_RXFE (1u << 4)
+#define UART_FR_TXFF (1u << 5)
+#define UART_INT_RX  (1u << 4) /* a character arrived */
+#define UART_INT_RT  (1u << 6) /* receive timeout (FIFO mode) */
+
+#define MSG_SIZE    64
+#define MAX_READERS 8
 
 #define SYST_CSR   (*(volatile uint32_t *)0xE000E010)
 #define KERNEL_RAM 0x20000000u
@@ -82,6 +91,13 @@ static void report(const char *name, int ok)
 	line_send(&l);
 }
 
+static void line_bytes(line_t *l, const char *s, uint32_t n)
+{
+	for (uint32_t i = 0; i < n && l->len < sizeof(l->buf); i++) {
+		l->buf[l->len++] = s[i];
+	}
+}
+
 static int same(const char *a, const char *b, uint32_t n)
 {
 	for (uint32_t i = 0; i < n; i++) {
@@ -108,20 +124,119 @@ void idle_task(uint32_t arg)
 	}
 }
 
-/* Owns the UART: prints whatever it is sent, kernel log included */
+static void put(char c)
+{
+	while (UART0_FR & UART_FR_TXFF) {
+	}
+	UART0_DR = (uint32_t)c;
+}
+
+/* Input line being typed; complete once it ends in '\n' */
+typedef struct {
+	char buf[MSG_SIZE];
+	uint32_t len;
+	int complete;
+	char last;
+} input_t;
+
+/* Line editing with echo: Enter ends the line, backspace erases */
+static void input_char(input_t *in, char c)
+{
+	char last = in->last;
+	in->last = c;
+	if (in->complete) {
+		return; /* one line is held until a task reads it */
+	}
+	if (c == '\r' || c == '\n') {
+		if (c == '\n' && last == '\r') {
+			return; /* CR LF is one line end */
+		}
+		in->buf[in->len++] = '\n';
+		in->complete = 1;
+		put('\n');
+	} else if (c == '\b' || c == 0x7f) {
+		if (in->len) {
+			in->len--;
+			put('\b');
+			put(' ');
+			put('\b');
+		}
+	} else if (c >= ' ' && in->len < MSG_SIZE - 1) {
+		in->buf[in->len++] = c;
+		put(c);
+	}
+}
+
+/* Owns the UART. Prints whatever it is sent (task output and the kernel
+ * log), reads input when the kernel says the UART interrupt fired, and
+ * answers SYS_READ requests (empty messages from tasks) with a line. */
 void console_task(uint32_t arg)
 {
 	(void)arg;
-	char buf[64];
+	char buf[MSG_SIZE];
 	uint32_t from;
+	input_t in = { .len = 0, .complete = 0, .last = 0 };
+	uint32_t readers[MAX_READERS];
+	uint32_t nreaders = 0;
+
+	UART0_IMR |= UART_INT_RX | UART_INT_RT;
 
 	while (1) {
 		int32_t n = sys_recv(buf, sizeof(buf), &from);
-		for (int32_t i = 0; i < n; i++) {
-			while (UART0_FR & (1 << 5)) {
-			}
-			UART0_DR = (uint32_t)buf[i];
+		if (n < 0) {
+			continue;
 		}
+		if (from == SENDER_IRQ) {
+			UART0_ICR = UART_INT_RX | UART_INT_RT;
+			while (!(UART0_FR & UART_FR_RXFE)) {
+				input_char(&in, (char)UART0_DR);
+			}
+		} else if (n == 0 && from != SENDER_KERNEL) {
+			if (nreaders < MAX_READERS) {
+				readers[nreaders++] = from;
+			}
+		} else {
+			for (int32_t i = 0; i < n; i++) {
+				put(buf[i]);
+			}
+		}
+
+		/* Oldest reader gets the next line; a reader that has gone
+		 * away (-ERROR_NO_TASK) leaves the line for the next one */
+		while (in.complete && nreaders) {
+			int32_t sent = sys_send(readers[0], in.buf, in.len);
+			for (uint32_t i = 1; i < nreaders; i++) {
+				readers[i - 1] = readers[i];
+			}
+			nreaders--;
+			if (sent >= 0) {
+				in.len = 0;
+				in.complete = 0;
+			}
+		}
+	}
+}
+
+/* Reads console lines through SYS_READ and prints them back */
+static void echo_task(uint32_t arg)
+{
+	(void)arg;
+	char buf[MSG_SIZE];
+	line_t l;
+
+	while (1) {
+		int32_t n = sys_read(buf, sizeof(buf));
+		if (n <= 0) {
+			sys_sleep(100);
+			continue;
+		}
+		line_init(&l);
+		line_str(&l, "[echo] task read: ");
+		line_bytes(&l, buf, (uint32_t)n);
+		if (buf[n - 1] != '\n') {
+			line_str(&l, "\n");
+		}
+		line_send(&l);
 	}
 }
 
@@ -257,11 +372,14 @@ static void uart_task(uint32_t arg)
 
 /* Unbounded recursion with small frames, as a runaway recursive function
  * would do: the stack reaches the guard above the heap and faults there */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winfinite-recursion"
 static uint32_t __attribute__((noinline)) recurse(uint32_t depth)
 {
 	volatile uint32_t frame[2] = { depth, depth };
 	return recurse(depth + 1) + frame[0] + frame[1];
 }
+#pragma GCC diagnostic pop
 
 static void stack_overflow_task(uint32_t arg)
 {
@@ -325,6 +443,7 @@ void register_user_tasks(void)
 {
 	rust_task_register("idle", idle_task, 0, TASK_IDLE);
 	rust_task_register("console", console_task, 0, TASK_CONSOLE);
+	rust_task_register("echo", echo_task, 0, TASK_SERVICE);
 
 	/* These run together: the sleeper and spinners load each other */
 	int32_t pong = rust_task_register("pong", pong_task, 0, 0);

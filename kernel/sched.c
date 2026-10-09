@@ -42,6 +42,13 @@ void __attribute__((naked)) PendSV_Handler(void)
 		"bx lr\n");
 }
 
+/* Console input arrived. The kernel does not read the UART: Rust masks
+ * the interrupt and wakes the console server, which does. */
+void UART0_Handler(void)
+{
+	rust_uart_irq();
+}
+
 void SysTick_Handler(void)
 {
 	rust_systick();

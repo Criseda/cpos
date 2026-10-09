@@ -24,11 +24,11 @@ use crate::arch;
 use crate::memory::LinkedListAllocator;
 use crate::syscall::numbers::*;
 use crate::uart;
-use ipc::{Line, LogRing, Mailbox, MSG_SIZE};
+use ipc::{Line, LogRing, Mailbox, Message, MSG_SIZE};
 use spin::Mutex;
 
 pub const MAX_TASKS: usize = 8;
-pub const MAX_PENDING: usize = 16;
+pub const MAX_PENDING: usize = 24;
 /// Bytes of RAM per task: heap below, stack guard, stack above
 pub const SLOT_SIZE: usize = 2048;
 pub const TASK_HEAP_SIZE: usize = 1024;
@@ -37,8 +37,12 @@ pub const STACK_GUARD: usize = mpu::STACK_GUARD_SIZE as usize;
 /// CFSR.MSTKERR: the MPU stopped exception entry pushing onto the stack
 const CFSR_MSTKERR: u32 = 1 << 4;
 pub const TICK_MS: usize = 10;
+/// File descriptor of console input
+const STDIN: usize = 0;
 /// Sender id the console sees for kernel log messages
 pub const KERNEL_SENDER: usize = 0;
+/// Sender id of the "UART input arrived" notification to the console
+pub const IRQ_SENDER: usize = u32::MAX as usize;
 
 /// Runs when nothing else is ready; never counted as a test task
 pub const TASK_IDLE: u32 = 1 << 0;
@@ -46,6 +50,8 @@ pub const TASK_IDLE: u32 = 1 << 0;
 pub const TASK_CONSOLE: u32 = 1 << 1;
 /// The task exists to prove a fault is caught; exiting normally is a failure
 pub const TASK_EXPECT_FAULT: u32 = 1 << 2;
+/// A long-running service; not waited for when counting finished tests
+pub const TASK_SERVICE: u32 = 1 << 3;
 
 /// Thumb bit set in the initial xPSR
 const INITIAL_XPSR: usize = 1 << 24;
@@ -85,6 +91,11 @@ struct Task {
     name: &'static [u8],
     flags: u32,
     mailbox: Mailbox,
+    /// SYS_READ asked the console for a line and is waiting for it
+    reading: bool,
+    /// The console's answer to that request, kept apart from the mailbox
+    /// so a full mailbox can never block the console
+    input: Option<Message>,
     heap: LinkedListAllocator,
 }
 
@@ -96,6 +107,8 @@ impl Task {
         name: b"",
         flags: 0,
         mailbox: Mailbox::EMPTY,
+        reading: false,
+        input: None,
         heap: LinkedListAllocator::new(),
     };
 }
@@ -135,6 +148,10 @@ pub struct Kernel {
     log: LogRing,
     exited: u32,
     faulted: u32,
+    /// The UART interrupt fired and the console has not been told yet
+    input_pending: bool,
+    /// The UART interrupt is masked until the console has read the input
+    input_masked: bool,
 }
 
 pub static KERNEL: Mutex<Kernel> = Mutex::new(Kernel::new());
@@ -177,6 +194,8 @@ impl Kernel {
             log: LogRing::new(),
             exited: 0,
             faulted: 0,
+            input_pending: false,
+            input_masked: false,
         }
     }
 
@@ -280,6 +299,8 @@ impl Kernel {
         task.name = s.name;
         task.flags = s.flags;
         task.mailbox.clear();
+        task.reading = false;
+        task.input = None;
     }
 
     /// Slot of the live task with this id
@@ -417,6 +438,25 @@ impl Kernel {
         }
         self.check_readable(slot, buf, len)?;
         let dest = self.find(dest_id).ok_or(ERROR_NO_TASK)?;
+        let console = self.console();
+        if len == 0 && console == Some(dest) {
+            // An empty message to the console means "read request"
+            return Err(ERROR_INVALID_ARGUMENT);
+        }
+        if console == Some(slot) && self.tasks[dest].reading {
+            // The console answering a SYS_READ: straight into the reader
+            // SAFETY: `check_readable` proved the range is the console's
+            // own slot or flash, both valid memory for the whole call.
+            let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, len) };
+            let msg = Message::new(self.tasks[slot].id, bytes);
+            let reader = &mut self.tasks[dest];
+            reader.input = Some(msg);
+            reader.reading = false;
+            if reader.state == State::Receiving {
+                reader.state = State::Ready;
+            }
+            return Ok(Outcome::Return(len as isize));
+        }
         if self.tasks[dest].mailbox.is_full() {
             self.tasks[slot].state = State::Sending { dest };
             arch::pend_switch();
@@ -449,8 +489,19 @@ impl Kernel {
         // SAFETY: `check_writable` proved the range lies in the caller's
         // slot, which only the caller uses and which outlives the call.
         let out = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, max) };
+        let is_console = self.tasks[slot].flags & TASK_CONSOLE != 0;
 
-        let (from, n) = if self.tasks[slot].flags & TASK_CONSOLE != 0 && !self.log.is_empty() {
+        // The console asking again means it has read the input it was
+        // told about, so the UART interrupt may fire again
+        if is_console && self.input_masked && !self.input_pending {
+            self.input_masked = false;
+            arch::irq_unmask(arch::UART0_IRQ);
+        }
+
+        let (from, n) = if is_console && self.input_pending {
+            self.input_pending = false;
+            (IRQ_SENDER, 0)
+        } else if is_console && !self.log.is_empty() {
             let limit = max.min(MSG_SIZE);
             let n = self.log.take(&mut out[..limit]);
             // Writers blocked on a full stream can try again
@@ -472,6 +523,51 @@ impl Kernel {
             unsafe { (from_out as *mut u32).write(from as u32) };
         }
         Ok(Outcome::Return(n as isize))
+    }
+
+    /// SYS_READ from a task: console input, one line (or up to one
+    /// message) per call. The console server owns the UART, so this asks
+    /// it with an empty message and blocks until its answer arrives.
+    pub fn sys_read(&mut self, slot: usize, fd: usize, buf: usize, len: usize) -> Result<Outcome, usize> {
+        if fd != STDIN || len == 0 {
+            return Err(ERROR_INVALID_ARGUMENT);
+        }
+        self.check_writable(slot, buf, len)?;
+        let console = self.console().ok_or(ERROR_NO_TASK)?;
+        if console == slot {
+            // The console would wait on itself forever
+            return Err(ERROR_INVALID_ARGUMENT);
+        }
+        if let Some(msg) = self.tasks[slot].input.take() {
+            let n = msg.len.min(len);
+            // SAFETY: `check_writable` proved the range lies in the
+            // caller's slot, which only the caller uses.
+            let out = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, n) };
+            out.copy_from_slice(&msg.data[..n]);
+            return Ok(Outcome::Return(n as isize));
+        }
+        if !self.tasks[slot].reading {
+            if self.tasks[console].mailbox.is_full() {
+                self.tasks[slot].state = State::Sending { dest: console };
+                arch::pend_switch();
+                return Ok(Outcome::Retry);
+            }
+            let id = self.tasks[slot].id;
+            self.tasks[console].mailbox.push(id, &[]);
+            self.tasks[slot].reading = true;
+            self.wake_console();
+        }
+        self.tasks[slot].state = State::Receiving;
+        arch::pend_switch();
+        Ok(Outcome::Retry)
+    }
+
+    /// UART interrupt: mask it and tell the console, which reads the UART
+    pub fn input_irq(&mut self) {
+        arch::irq_mask(arch::UART0_IRQ);
+        self.input_masked = true;
+        self.input_pending = true;
+        self.wake_console();
     }
 
     /// SYS_WRITE from a task: append up to one message's worth of bytes to
@@ -566,6 +662,8 @@ impl Kernel {
         let t = &mut self.tasks[slot];
         t.state = State::Free;
         t.mailbox.clear();
+        t.reading = false;
+        t.input = None;
         // Senders waiting on it retry and get ERROR_NO_TASK
         self.wake_senders(slot);
         if self.boosted == Some(slot) {
@@ -589,7 +687,7 @@ impl Kernel {
         let busy = self
             .tasks
             .iter()
-            .any(|t| t.state != State::Free && t.flags & (TASK_IDLE | TASK_CONSOLE) == 0);
+            .any(|t| t.state != State::Free && t.flags & (TASK_IDLE | TASK_CONSOLE | TASK_SERVICE) == 0);
         if busy {
             return;
         }
@@ -628,7 +726,7 @@ mod tests {
     extern crate std;
 
     use super::*;
-    use crate::arch::imp::{MPU, SWITCH_PENDING};
+    use crate::arch::imp::{IRQ_UNMASKED, MPU, SWITCH_PENDING};
     use std::boxed::Box;
 
     #[repr(C, align(2048))]
@@ -785,6 +883,57 @@ mod tests {
         assert_eq!(k.tasks[1].state, State::Sending { dest: 2 });
         k.sys_recv(2, b_buf, 16, 0).unwrap();
         assert_eq!(k.tasks[1].state, State::Ready);
+    }
+
+    #[test]
+    fn console_input_round_trip() {
+        let mut f = kernel_with(&[(b"console", TASK_CONSOLE), (b"reader", 0)]);
+        let (rbuf, cbuf, from_out) = (f.slot_addr(2, 1100), f.slot_addr(1, 1100), f.slot_addr(1, 1200));
+        let k = &mut f.k;
+        let reader = k.tasks[2].id;
+        let from = || unsafe { (from_out as *const u32).read() as usize };
+
+        // The reader asks the console and blocks
+        assert_eq!(k.sys_read(2, STDIN, rbuf, 16), Ok(Outcome::Retry));
+        assert_eq!(k.tasks[2].state, State::Receiving);
+        assert!(k.tasks[2].reading);
+        // Asking again while waiting does not send a second request
+        assert_eq!(k.sys_read(2, STDIN, rbuf, 16), Ok(Outcome::Retry));
+        assert_eq!(k.sys_recv(1, cbuf, 64, from_out), Ok(Outcome::Return(0)));
+        assert_eq!(from(), reader, "empty message from the reader = request");
+        assert_eq!(k.sys_recv(1, cbuf, 64, from_out), Ok(Outcome::Retry));
+
+        // Input arrives: the line is masked until the console has read it
+        IRQ_UNMASKED.with(|u| u.set(true));
+        k.tasks[1].state = State::Receiving;
+        k.input_irq();
+        assert!(!IRQ_UNMASKED.with(|u| u.get()));
+        assert_eq!(k.tasks[1].state, State::Ready);
+        assert_eq!(k.sys_recv(1, cbuf, 64, from_out), Ok(Outcome::Return(0)));
+        assert_eq!(from(), IRQ_SENDER);
+        assert!(!IRQ_UNMASKED.with(|u| u.get()), "still masked while the console reads");
+        assert_eq!(k.sys_recv(1, cbuf, 64, from_out), Ok(Outcome::Retry));
+        assert!(IRQ_UNMASKED.with(|u| u.get()), "unmasked once the console asks again");
+
+        // Fill the reader's mailbox: the answer must still get through
+        for _ in 0..ipc::MAILBOX_DEPTH {
+            assert!(k.tasks[2].mailbox.push(99, b"x"));
+        }
+        unsafe { (cbuf as *mut [u8; 3]).write(*b"hi
+") };
+        assert_eq!(k.sys_send(1, reader, cbuf, 3), Ok(Outcome::Return(3)));
+        assert_eq!(k.tasks[2].state, State::Ready);
+        assert_eq!(k.sys_read(2, STDIN, rbuf, 16), Ok(Outcome::Return(3)));
+        assert_eq!(unsafe { (rbuf as *const [u8; 3]).read() }, *b"hi
+");
+        assert!(!k.tasks[2].reading);
+
+        // An empty message to the console would look like a request
+        let bad: Result<Outcome, usize> = Err(ERROR_INVALID_ARGUMENT);
+        let console = k.tasks[1].id;
+        assert_eq!(k.sys_send(2, console, rbuf, 0), bad);
+        assert_eq!(k.sys_read(1, STDIN, cbuf, 16), bad, "the console cannot read from itself");
+        assert_eq!(k.sys_read(2, 1, rbuf, 16), bad, "only stdin");
     }
 
     #[test]

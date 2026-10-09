@@ -135,12 +135,20 @@ pub extern "C" fn rust_sched_start(slot_base: usize, flash_end: usize, exit_tram
     arch::set_priorities();
     arch::enable_fault_handlers();
     arch::mpu_enable(&[flash.pair()]);
+    arch::irq_unmask(arch::UART0_IRQ);
     uart::mark_scheduler_started();
     arch::start_systick(tick_reload);
     arch::pend_switch();
     // PendSV runs as soon as interrupts are back on and never returns here
     arch::enable_irq();
     0
+}
+
+/// UART0 interrupt: received input. The kernel never touches the UART;
+/// it masks the line and tells the console server, which reads the data.
+#[no_mangle]
+pub extern "C" fn rust_uart_irq() {
+    KERNEL.lock().input_irq();
 }
 
 /// PendSV: called with the outgoing task's stack pointer (after r4-r11

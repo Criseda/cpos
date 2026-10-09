@@ -18,6 +18,7 @@ extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss, _stack_top;
 
 /* Declarations for interrupt handlers */
 void Reset_Handler(void);
+void Default_Handler(void);
 void NMI_Handler(void) __attribute__((weak, alias("Default_Handler")));
 void HardFault_Handler(void) __attribute__((weak, alias("Default_Handler")));
 void MemManage_Handler(void) __attribute__((weak, alias("Default_Handler")));
@@ -27,6 +28,7 @@ void SVC_Handler(void) __attribute__((weak, alias("Default_Handler")));
 void DebugMon_Handler(void) __attribute__((weak, alias("Default_Handler")));
 void PendSV_Handler(void) __attribute__((weak, alias("Default_Handler")));
 void SysTick_Handler(void) __attribute__((weak, alias("Default_Handler")));
+void UART0_Handler(void) __attribute__((weak, alias("Default_Handler")));
 
 /* 
  * Defined section for interrupt vector table
@@ -48,7 +50,15 @@ __attribute__((section(".vectors"))) void (*const g_pfnVectors[])(void) = {
 	DebugMon_Handler, 		/* Debug monitor */
 	0, 				/* Reserved */
 	PendSV_Handler, 		/* PendSV */
-	SysTick_Handler 		/* SysTick */
+	SysTick_Handler, 		/* SysTick */
+
+	/* External interrupts (LM3S6965); only UART0 is used */
+	Default_Handler, 		/* IRQ 0: GPIO port A */
+	Default_Handler, 		/* IRQ 1: GPIO port B */
+	Default_Handler, 		/* IRQ 2: GPIO port C */
+	Default_Handler, 		/* IRQ 3: GPIO port D */
+	Default_Handler, 		/* IRQ 4: GPIO port E */
+	UART0_Handler 			/* IRQ 5: UART0 */
 };
 
 void Default_Handler(void)

@@ -124,9 +124,9 @@ fn task_call(k: &mut Kernel, slot: usize, number: usize, arg1: usize, arg2: usiz
             k.check_readable(slot, arg2, arg3)?;
             return k.sys_write(slot, arg2, arg3);
         }
-        // Console input would be a request to the console server; the
-        // kernel no longer touches the UART once tasks run
-        SYS_READ => return Err(ERROR_NOT_IMPLEMENTED),
+        // A request to the console server: the kernel no longer touches
+        // the UART once tasks run
+        SYS_READ => return k.sys_read(slot, arg1, arg2, arg3),
         SYS_EXIT => return Ok(k.sys_exit(slot, arg1)),
         SYS_SLEEP => return Ok(k.sys_sleep(slot, arg1)),
         SYS_YIELD => return Ok(k.sys_yield()),

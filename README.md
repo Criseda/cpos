@@ -79,9 +79,11 @@ weak default handler.
 | SVCall | `SVC_Handler` | System calls |
 | PendSV | `PendSV_Handler` | Context switch (lowest priority) |
 | SysTick | `SysTick_Handler` | 10 ms scheduler tick |
+| IRQ 5 (UART0) | `UART0_Handler` | Console input: masks itself and wakes the console server |
 
-SVC, SysTick and the configurable faults share one priority so they never
-preempt each other while holding kernel state; PendSV runs below them.
+SVC, SysTick, the UART interrupt and the configurable faults share one
+priority so they never preempt each other while holding kernel state;
+PendSV runs below them.
 
 ## Tasks and Scheduling
 
@@ -126,6 +128,21 @@ touches the UART: `SYS_WRITE` from a task, and the kernel's own log lines
 (faults, test results), go into one ordered stream that the console server
 drains and prints. A counter in the C UART driver records any byte written
 by privileged code after that point; the boot test checks it stays 0.
+
+Input works the same way round. The UART receive interrupt reaches the
+kernel, which only masks it and wakes the console server; the server reads
+the characters, echoes them and edits the line (Enter, backspace), and the
+kernel unmasks the interrupt when the server next waits for a message. A
+task's `SYS_READ` becomes a request to the console server (an empty message
+from that task), and the task blocks until the server answers with a line.
+The answer goes to a separate per-task slot, not the mailbox, so a task with
+a full mailbox cannot stall the console. The `echo` service task reads lines
+this way and prints them back: type a line while CPOS runs in QEMU.
+
+The console server sees three kinds of sender: the kernel (id 0, log text),
+the UART interrupt (id `0xFFFFFFFF`, nothing to read), and tasks (text to
+print, or an empty message for a read request; an empty `SYS_SEND` to the
+console is rejected so the two cannot be confused).
 
 ## Memory Management
 
@@ -183,7 +200,7 @@ unprivileged tasks, and every pointer is checked.
 | Number | Name       | Description | Arguments |
 |--------|------------|-------------|-----------|
 | 1      | SYS_WRITE  | Write to the console (fd 1); from a task, returns the bytes taken, at most 64 per call | fd, buffer, length |
-| 2      | SYS_READ   | Read from the UART (fd 0) up to length or a newline; kernel context only, tasks get `-3` | fd, buffer, length |
+| 2      | SYS_READ   | Read one line of console input (fd 0), newline included; from a task, blocks until the console server answers (at most 64 bytes) | fd, buffer, length |
 | 10     | SYS_EXIT   | End the calling task | exit_code |
 | 11     | SYS_SLEEP  | Sleep for at least the given milliseconds (10 ms ticks) | ms |
 | 12     | SYS_YIELD  | Give up the rest of the time slice | - |
@@ -239,8 +256,10 @@ make && make qemu
 
 The boot run first exercises the allocator and syscalls from the kernel,
 then starts the scheduler and runs unprivileged test tasks: preemption,
-sleep timing, privilege, MPU faults, pointer checks, per-task heaps, IPC and
-exit. Expected faults are reported as `stopped by fault: OK`.
+sleep timing, privilege, MPU faults, pointer checks, per-task heaps, IPC,
+exit and stack overflow. Expected faults are reported as `stopped by fault: OK`.
+Once the tests finish, type a line and press Enter: the `echo` task reads
+it with `SYS_READ` and prints `[echo] task read: ...`.
 
 ## Verified claims
 
@@ -256,6 +275,7 @@ reports 41 checks OK and 0 FAILED.
 | MPU isolation between tasks and from the kernel | QEMU: tasks touching kernel data, another task's stack or the UART are killed by MemManage faults; the kernel rejects out-of-bounds pointers with `-6` |
 | Stack overflow detection | QEMU: a runaway recursive task is killed by a MemManage fault inside its stack guard, before it reaches its heap |
 | Microkernel-style: the UART driver is an unprivileged server task | QEMU: all task output goes through the console server; privileged UART writes after scheduler start = 0 |
+| Console input through the server | QEMU: a line typed on the serial port (also before the scheduler starts) reaches the `echo` task's `SYS_READ`; host test: request, interrupt masking, answer with a full mailbox |
 | No leaks in the allocator | Host tests: 200,000 randomized operations with exact byte accounting and invariant checks after every step; boot test: the heap returns to one block of its original size after 1,000 mixed cycles; Miri: no undefined behaviour in the test suite; fuzzing: 2.4M random alloc/free sequences end fully coalesced |
 | Memory-safety discipline in the Rust core | 31 `unsafe` sites in kernel code (24 blocks, 6 functions, 1 impl), all with a written `SAFETY` justification (`scripts/unsafe_audit.py`); fuzzing: 2.75M random syscall sequences with hostile pointers and 5.7M allocator runs with corrupted headers, with no crash, hang or out-of-bounds write |
 
@@ -263,8 +283,8 @@ Known limits:
 
 - QEMU 7.2 lets an unprivileged task *read* System Control Space registers;
   real Cortex-M3 hardware raises a BusFault. Tasks still cannot change them.
-- `SYS_READ` works only before the scheduler starts; console input for tasks
-  would be a request to the console server and is not implemented.
+- The console holds one finished line until a task reads it; characters
+  typed meanwhile are dropped.
 - The stack guard is 32 bytes. A single function that reserves more stack
   than that at once can step over it; the allocator's header checks still
   keep a corrupted heap from leading the kernel outside it.

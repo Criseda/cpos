@@ -32,6 +32,13 @@ static inline int32_t sys_call(uint32_t number, uint32_t arg1, uint32_t arg2,
 	return (int32_t)r0;
 }
 
+/* One line of console input (up to len bytes, newline included); blocks
+ * until the console server has a line for this task */
+static inline int32_t sys_read(void *buf, uint32_t len)
+{
+	return sys_call(SYS_READ, 0, (uint32_t)buf, len);
+}
+
 static inline int32_t sys_write(const void *buf, uint32_t len)
 {
 	return sys_call(SYS_WRITE, 1, (uint32_t)buf, len);

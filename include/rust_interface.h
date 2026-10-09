@@ -36,10 +36,16 @@ int32_t rust_sched_start(uintptr_t slot_base, uintptr_t flash_end,
 uint32_t rust_switch_context(uint32_t saved_sp);
 void rust_systick(void);
 void rust_fault(uint32_t exc_return, uint32_t exception);
+void rust_uart_irq(void);
 
 #define TASK_IDLE         (1u << 0) /* runs when nothing else can */
 #define TASK_CONSOLE      (1u << 1) /* owns the UART, prints for everyone */
 #define TASK_EXPECT_FAULT (1u << 2) /* test task that must be killed by a fault */
+#define TASK_SERVICE      (1u << 3) /* runs forever; not a test to wait for */
+
+/* Sender ids the console server sees besides task ids */
+#define SENDER_KERNEL 0u          /* kernel log text */
+#define SENDER_IRQ    0xFFFFFFFFu /* UART input is waiting to be read */
 
 #define TICK_MS 10
 
