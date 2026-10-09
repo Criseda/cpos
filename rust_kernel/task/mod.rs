@@ -52,6 +52,9 @@ pub const TASK_CONSOLE: u32 = 1 << 1;
 pub const TASK_EXPECT_FAULT: u32 = 1 << 2;
 /// A long-running service; not waited for when counting finished tests
 pub const TASK_SERVICE: u32 = 1 << 3;
+/// A test task that may be killed by a fault or exit normally, for
+/// behaviour that differs between QEMU and hardware
+pub const TASK_MAY_FAULT: u32 = 1 << 4;
 
 /// Thumb bit set in the initial xPSR
 const INITIAL_XPSR: usize = 1 << 24;
@@ -648,7 +651,7 @@ impl Kernel {
             line.bytes(b" (stack overflow)");
         }
         line.bytes(b", task killed\n");
-        let expected = t.flags & TASK_EXPECT_FAULT != 0;
+        let expected = t.flags & (TASK_EXPECT_FAULT | TASK_MAY_FAULT) != 0;
         let mut verdict = Line::new();
         verdict.bytes(b"  - ").bytes(t.name);
         verdict.bytes(if expected { b" stopped by fault: OK\n" } else { b" crashed: FAILED\n" });
@@ -919,13 +922,11 @@ mod tests {
         for _ in 0..ipc::MAILBOX_DEPTH {
             assert!(k.tasks[2].mailbox.push(99, b"x"));
         }
-        unsafe { (cbuf as *mut [u8; 3]).write(*b"hi
-") };
+        unsafe { (cbuf as *mut [u8; 3]).write(*b"hi\n") };
         assert_eq!(k.sys_send(1, reader, cbuf, 3), Ok(Outcome::Return(3)));
         assert_eq!(k.tasks[2].state, State::Ready);
         assert_eq!(k.sys_read(2, STDIN, rbuf, 16), Ok(Outcome::Return(3)));
-        assert_eq!(unsafe { (rbuf as *const [u8; 3]).read() }, *b"hi
-");
+        assert_eq!(unsafe { (rbuf as *const [u8; 3]).read() }, *b"hi\n");
         assert!(!k.tasks[2].reading);
 
         // An empty message to the console would look like a request
@@ -998,15 +999,25 @@ mod tests {
 
     #[test]
     fn faults_are_logged_and_judged() {
-        let mut f = kernel_with(&[(b"console", TASK_CONSOLE), (b"bad", TASK_EXPECT_FAULT), (b"oops", 0)]);
+        let mut f = kernel_with(&[
+            (b"console", TASK_CONSOLE),
+            (b"bad", TASK_EXPECT_FAULT),
+            (b"oops", 0),
+            (b"maybe", TASK_MAY_FAULT),
+        ]);
+        let guard = f.slot_addr(2, TASK_HEAP_SIZE + 8);
         let k = &mut f.k;
-        k.task_fault(2, 4, 0, Some(0x2000_0000));
+        k.task_fault(2, 4, 0, Some(guard));
         k.task_fault(3, 5, 0, None);
+        k.task_fault(4, 5, 0, None);
         let log = drain_log(k);
-        assert!(log.contains("bad: MemManage at 0x20000000"));
+        assert!(log.contains("bad: MemManage at 0x"));
+        assert!(log.contains("(stack overflow), task killed"), "fault in the stack guard");
+        assert!(log.contains("oops: BusFault, task killed"), "not every fault is an overflow");
         assert!(log.contains("  - bad stopped by fault: OK\n"));
         assert!(log.contains("  - oops crashed: FAILED\n"));
-        assert!(log.contains("[TEST] Task tests complete: 0 exited, 2 killed by faults\n"));
+        assert!(log.contains("  - maybe stopped by fault: OK\n"));
+        assert!(log.contains("[TEST] Task tests complete: 0 exited, 3 killed by faults\n"));
         assert!(log.contains("since scheduler start = 0: OK\n"));
     }
 
@@ -1017,20 +1028,15 @@ mod tests {
         let from = f.slot_addr(1, 1200);
         let a_buf = f.slot_addr(2, 1100);
         let k = &mut f.k;
-        unsafe { (a_buf as *mut [u8; 3]).write(*b"hi
-") };
+        unsafe { (a_buf as *mut [u8; 3]).write(*b"hi\n") };
         assert_eq!(k.sys_write(2, a_buf, 3), Ok(Outcome::Return(3)));
         let mut line = Line::new();
-        line.bytes(b"kernel says
-");
+        line.bytes(b"kernel says\n");
         k.log_line(&line);
         assert_eq!(k.sys_write(2, a_buf, 3), Ok(Outcome::Return(3)));
 
         assert_eq!(k.sys_recv(1, buf, 64, from), Ok(Outcome::Return(18)));
-        assert_eq!(unsafe { (buf as *const [u8; 18]).read() }, *b"hi
-kernel says
-hi
-");
+        assert_eq!(unsafe { (buf as *const [u8; 18]).read() }, *b"hi\nkernel says\nhi\n");
         assert_eq!(unsafe { (from as *const u32).read() }, KERNEL_SENDER as u32);
         assert_eq!(k.sys_write(1, buf, 2), Err(ERROR_INVALID_ARGUMENT), "console can't write to itself");
     }

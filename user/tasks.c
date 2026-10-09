@@ -310,9 +310,15 @@ static void unprivileged_task(uint32_t arg)
 	/* Try to clear nPRIV; the write is ignored in unprivileged mode */
 	__asm volatile("msr control, %0\nisb" : : "r"(0u) : "memory");
 	report("Task cannot make itself privileged", read_control() & 1);
+}
 
-	/* Try to stop the system timer. Unprivileged access to the System
-	 * Control Space must not take effect: ticks keep coming. */
+/* Try to stop the system timer. Unprivileged access to the System Control
+ * Space must not take effect: a Cortex-M3 raises a BusFault, which kills
+ * the task; QEMU 7.2 ignores the write instead, and ticks keep coming.
+ * Either outcome passes (TASK_MAY_FAULT). */
+static void systick_poke_task(uint32_t arg)
+{
+	(void)arg;
 	SYST_CSR = 0;
 	uint32_t before = sys_ticks();
 	sys_sleep(50);
@@ -452,6 +458,7 @@ void register_user_tasks(void)
 	rust_task_register("spinner-b", spinner_task, 0, 0);
 	rust_task_register("sleeper", sleeper_task, 0, 0);
 	rust_task_register("unprivileged", unprivileged_task, 0, 0);
+	rust_task_register("systick-poke", systick_poke_task, 0, TASK_MAY_FAULT);
 
 	/* Queued until slots free up */
 	rust_task_register("bad-pointers", bad_pointer_task, 0, 0);

@@ -42,6 +42,7 @@ void rust_uart_irq(void);
 #define TASK_CONSOLE      (1u << 1) /* owns the UART, prints for everyone */
 #define TASK_EXPECT_FAULT (1u << 2) /* test task that must be killed by a fault */
 #define TASK_SERVICE      (1u << 3) /* runs forever; not a test to wait for */
+#define TASK_MAY_FAULT    (1u << 4) /* test task for which a fault is also a pass */
 
 /* Sender ids the console server sees besides task ids */
 #define SENDER_KERNEL 0u          /* kernel log text */
