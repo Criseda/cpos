@@ -1,6 +1,6 @@
 # CPOS - ARM Cortex-M3 Operating System
 
-## Version: 0.2.0
+## Version: 0.3.0
 
 Bare-metal ARM OS designed for embedded systems with ARM Cortex-M3 processors.
 
@@ -292,7 +292,7 @@ reports 41 checks OK and 0 FAILED.
 | Microkernel-style: the UART driver is an unprivileged server task | QEMU: all task output goes through the console server; privileged UART writes after scheduler start = 0 |
 | Console input through the server | QEMU: a line typed on the serial port (also before the scheduler starts) reaches the `echo` task's `SYS_READ`; host test: request, interrupt masking, answer with a full mailbox |
 | No leaks in the allocator | Host tests: 200,000 randomized operations with exact byte accounting and invariant checks after every step; boot test: the heap returns to one block of its original size after 1,000 mixed cycles; Miri: no undefined behaviour in the test suite; fuzzing: 2.4M random alloc/free sequences end fully coalesced |
-| Memory-safety discipline in the Rust core | 31 `unsafe` sites in kernel code (24 blocks, 6 functions, 1 impl), all with a written `SAFETY` justification (`scripts/unsafe_audit.py`); fuzzing: 2.75M random syscall sequences with hostile pointers and 5.7M allocator runs with corrupted headers, with no crash, hang or out-of-bounds write |
+| Memory-safety discipline in the Rust core | 33 `unsafe` sites in kernel code (26 blocks, 6 functions, 1 impl), all with a written `SAFETY` justification (`scripts/unsafe_audit.py`); fuzzing: 840K random syscall sequences with hostile pointers (including console input requests) and 5.7M allocator runs with corrupted headers, with no crash, hang or out-of-bounds write |
 
 Known limits:
 
