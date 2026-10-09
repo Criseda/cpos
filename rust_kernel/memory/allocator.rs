@@ -6,209 +6,216 @@
 //
 //! Linked list allocator for kernel heap
 //!
-//! This module provides a memory allocator implementation using a linked list
-//! to track free memory blocks. It supports allocation, deallocation, and
-//! memory block coalescing for efficient memory reuse.
+//! Every block, free or allocated, starts with the same `BlockHeader`, and
+//! `size` always holds the full block size including the header. That keeps
+//! the accounting exact: freeing a block hands back exactly the bytes that
+//! allocating it took.
+//!
+//! The free list is kept sorted by address so that neighbouring free blocks
+//! can always be coalesced on free.
 
+use core::mem::{align_of, size_of};
 use core::ptr::null_mut;
 use spin::Mutex;
 
-// Define a memory block structure to track allocations
+/// Alignment of every block and every returned pointer (AAPCS requires 8 for
+/// 64-bit types).
+const ALIGN: usize = 8;
+
 #[repr(C)]
 struct BlockHeader {
+    /// Full block size in bytes, header included
     size: usize,
-    next: Option<*mut BlockHeader>,
+    /// Next free block (only meaningful while the block is free)
+    next: *mut BlockHeader,
 }
 
-impl BlockHeader {
-    #[allow(dead_code)]
-    const fn new(size: usize) -> Self {
-        BlockHeader { size, next: None }
-    }
+/// Header size rounded up so the payload stays `ALIGN`-aligned
+const HEADER: usize = align_up(size_of::<BlockHeader>(), ALIGN);
 
-    fn start_addr(&self) -> usize {
-        self as *const Self as usize
-    }
+/// Smallest block worth splitting off as a separate free block
+const MIN_BLOCK: usize = HEADER + ALIGN;
 
-    fn end_addr(&self) -> usize {
-        self.start_addr() + self.size
-    }
+const _: () = assert!(ALIGN >= align_of::<BlockHeader>());
+
+/// Heap usage snapshot
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeapStats {
+    pub heap_size: usize,
+    pub free_bytes: usize,
+    pub free_blocks: usize,
 }
 
-// The actual allocator implementation
-struct LinkedListAllocator {
-    head: Option<*mut BlockHeader>,
+/// Reasons `deallocate` can reject a pointer
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FreeError {
+    /// Pointer is outside the heap or misaligned
+    InvalidPointer,
+    /// Pointer refers to a block that is already free
+    DoubleFree,
+}
+
+pub(crate) struct LinkedListAllocator {
+    head: *mut BlockHeader,
     heap_start: usize,
     heap_end: usize,
 }
 
-// Explicitly mark as thread-safe
+// The allocator is only ever reached through the global mutex
 unsafe impl Send for LinkedListAllocator {}
-unsafe impl Sync for LinkedListAllocator {}
 
 impl LinkedListAllocator {
-    // Create a new empty allocator
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         LinkedListAllocator {
-            head: None,
+            head: null_mut(),
             heap_start: 0,
             heap_end: 0,
         }
     }
 
-    // Initialize the allocator with heap bounds
-    unsafe fn init(&mut self, heap_start: usize, heap_size: usize) {
-        self.heap_start = heap_start;
-        self.heap_end = heap_start + heap_size;
-        self.add_free_region(heap_start, heap_size);
+    /// Hand the region `[heap_start, heap_start + heap_size)` to the allocator.
+    ///
+    /// # Safety
+    ///
+    /// The region must be valid, writable, unused by anything else, and
+    /// this must be called once before any allocation.
+    pub(crate) unsafe fn init(&mut self, heap_start: usize, heap_size: usize) {
+        let start = align_up(heap_start, ALIGN);
+        let end = (heap_start + heap_size) & !(ALIGN - 1);
+        self.heap_start = start;
+        self.heap_end = start;
+        self.head = null_mut();
+
+        if end > start && end - start >= MIN_BLOCK {
+            self.heap_end = end;
+            let block = start as *mut BlockHeader;
+            (*block).size = end - start;
+            (*block).next = null_mut();
+            self.head = block;
+        }
     }
 
-    // Add a memory region to the free list
-    unsafe fn add_free_region(&mut self, addr: usize, size: usize) {
-        // Ensure the region is large enough for a block header
-        assert!(size >= core::mem::size_of::<BlockHeader>());
+    /// Allocate `size` bytes, returning null if the heap cannot satisfy it
+    pub(crate) fn allocate(&mut self, size: usize) -> *mut u8 {
+        let need = match size
+            .max(1)
+            .checked_add(ALIGN - 1)
+            .map(|s| (s & !(ALIGN - 1)) + HEADER)
+        {
+            Some(n) => n,
+            None => return null_mut(),
+        };
 
-        // Create a new block header
-        let block_header = addr as *mut BlockHeader;
-        (*block_header).size = size;
-        (*block_header).next = self.head;
-
-        // Add the new block to the start of the list
-        self.head = Some(block_header);
-    }
-
-    // Find a free region with the given size and alignment
-    fn find_region(
-        &mut self,
-        size: usize,
-        align: usize,
-    ) -> Option<(*mut BlockHeader, *mut BlockHeader)> {
-        // Start with the head of our free list
+        let mut prev: *mut BlockHeader = null_mut();
         let mut current = self.head;
-        let mut previous = null_mut();
 
-        // Look through the list for a suitable block
-        while let Some(region) = current {
-            unsafe {
-                let region_ref = &*region;
-                let header_size = core::mem::size_of::<BlockHeader>();
-                let alloc_start = align_up(region as usize + header_size, align);
-                let alloc_end = alloc_start + size;
+        unsafe {
+            while !current.is_null() {
+                let block_size = (*current).size;
+                if block_size >= need {
+                    let replacement = if block_size - need >= MIN_BLOCK {
+                        // Split: the tail stays free and takes our place in the list
+                        let rest = (current as usize + need) as *mut BlockHeader;
+                        (*rest).size = block_size - need;
+                        (*rest).next = (*current).next;
+                        (*current).size = need;
+                        rest
+                    } else {
+                        // Too small to split: hand out the whole block
+                        (*current).next
+                    };
 
-                // If this region is big enough
-                if alloc_end <= region_ref.end_addr() {
-                    // Region is suitable, return it
-                    return Some((region, previous));
+                    if prev.is_null() {
+                        self.head = replacement;
+                    } else {
+                        (*prev).next = replacement;
+                    }
+
+                    (*current).next = null_mut();
+                    return (current as usize + HEADER) as *mut u8;
                 }
-
-                // Move to the next region
-                previous = region;
-                current = region_ref.next;
+                prev = current;
+                current = (*current).next;
             }
         }
 
-        // No suitable region found
-        None
-    }
-
-    // Allocate a block with given size and alignment
-    fn allocate(&mut self, size: usize, align: usize) -> *mut u8 {
-        let size = core::cmp::max(size, 1);
-
-        // Try to find a suitable region
-        if let Some((region, previous)) = self.find_region(size, align) {
-            unsafe {
-                let region_ref = &*region;
-                let header_size = core::mem::size_of::<BlockHeader>();
-                let alloc_start = align_up(region as usize + header_size, align);
-                let alloc_end = alloc_start + size;
-
-                // Calculate the leftover parts
-                let excess_size = region_ref.end_addr() - alloc_end;
-
-                // Update our linked list
-                if previous.is_null() {
-                    // This was the first block
-                    self.head = region_ref.next;
-                } else {
-                    // This was not the first block
-                    (*previous).next = region_ref.next;
-                }
-
-                // If we have enough excess space, add it back as a free block
-                if excess_size > header_size {
-                    self.add_free_region(alloc_end, excess_size);
-                }
-
-                // Store the allocation size just before the returned pointer
-                let size_ptr = (alloc_start - core::mem::size_of::<usize>()) as *mut usize;
-                *size_ptr = size;
-
-                return alloc_start as *mut u8;
-            }
-        }
-
-        // No suitable region found
         null_mut()
     }
 
-    // Free a previously allocated block
-    unsafe fn deallocate(&mut self, ptr: *mut u8) {
-        // Get the allocation size stored before the pointer
-        let size_ptr = (ptr as usize - core::mem::size_of::<usize>()) as *mut usize;
-        let size = *size_ptr;
-        let mut total_size = size + core::mem::size_of::<usize>();
-
-        // Calculate address of the block we're freeing
-        let block_addr = ptr as usize - core::mem::size_of::<usize>();
-        let block_end = block_addr + total_size;
-
-        // Find where to insert in the sorted free list
-        let mut current = self.head;
-        let mut prev = None;
-
-        // Find the right position (keeping the list sorted by address)
-        while let Some(current_ptr) = current {
-            if current_ptr as usize > block_addr {
-                // Found the insertion point
-                break;
-            }
-            prev = current;
-            current = (*current_ptr).next;
+    /// Return a block to the free list, coalescing with its neighbours.
+    ///
+    /// Pointers outside the heap, misaligned pointers and pointers into
+    /// already-free memory are rejected instead of corrupting the list.
+    ///
+    /// # Safety
+    ///
+    /// A pointer that passes the checks must have come from `allocate`.
+    pub(crate) unsafe fn deallocate(&mut self, ptr: *mut u8) -> Result<(), FreeError> {
+        let addr = ptr as usize;
+        if addr % ALIGN != 0 || addr < self.heap_start + HEADER || addr >= self.heap_end {
+            return Err(FreeError::InvalidPointer);
         }
 
-        // Check if we can coalesce with the block after us
-        if let Some(next_block) = current {
-            if next_block as usize == block_end {
-                // The next block is adjacent to us, merge it
-                let next_size = (*next_block).size;
-                total_size += next_size;
+        let block = (addr - HEADER) as *mut BlockHeader;
+        let block_start = block as usize;
+        let size = (*block).size;
+        if size < HEADER + ALIGN || size % ALIGN != 0 || size > self.heap_end - block_start {
+            return Err(FreeError::InvalidPointer);
+        }
+        let block_end = block_start + size;
 
-                // Skip the next block in the list
-                current = (*next_block).next;
-            }
+        // Find the free blocks on either side of us
+        let mut prev: *mut BlockHeader = null_mut();
+        let mut next = self.head;
+        while !next.is_null() && (next as usize) < block_start {
+            prev = next;
+            next = (*next).next;
         }
 
-        // Check if we can coalesce with the block before us
-        if let Some(prev_block) = prev {
-            if (*prev_block).end_addr() == block_addr {
-                // The previous block is adjacent to us, merge with it
-                (*prev_block).size += total_size;
-                (*prev_block).next = current;
-                return; // We're done, block is merged with previous
-            }
+        // Any overlap with a free block means this one is already free
+        if !prev.is_null() && prev as usize + (*prev).size > block_start {
+            return Err(FreeError::DoubleFree);
+        }
+        if !next.is_null() && (next as usize) < block_end {
+            return Err(FreeError::DoubleFree);
         }
 
-        // If we didn't merge with the previous block, create a new one
-        let new_block = block_addr as *mut BlockHeader;
-        (*new_block).size = total_size;
-        (*new_block).next = current;
-
-        // Update the list
-        if let Some(prev_block) = prev {
-            (*prev_block).next = Some(new_block);
+        // Merge with the following block
+        if !next.is_null() && next as usize == block_end {
+            (*block).size += (*next).size;
+            (*block).next = (*next).next;
         } else {
-            self.head = Some(new_block);
+            (*block).next = next;
+        }
+
+        // Merge with the preceding block, or link in after it
+        if !prev.is_null() && prev as usize + (*prev).size == block_start {
+            (*prev).size += (*block).size;
+            (*prev).next = (*block).next;
+        } else if prev.is_null() {
+            self.head = block;
+        } else {
+            (*prev).next = block;
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn stats(&self) -> HeapStats {
+        let mut free_bytes = 0;
+        let mut free_blocks = 0;
+        let mut current = self.head;
+        while !current.is_null() {
+            unsafe {
+                free_bytes += (*current).size;
+                current = (*current).next;
+            }
+            free_blocks += 1;
+        }
+        HeapStats {
+            heap_size: self.heap_end - self.heap_start,
+            free_bytes,
+            free_blocks,
         }
     }
 }
@@ -229,23 +236,209 @@ pub unsafe fn init_heap(heap_start: usize, heap_size: usize) {
 ///
 /// # Returns
 ///
-/// Pointer to allocated memory or null if out of memory
+/// Pointer to allocated memory (8-byte aligned) or null if out of memory
 pub fn alloc(size: usize) -> *mut u8 {
-    ALLOCATOR.lock().allocate(size, 4) // 4-byte alignment
+    ALLOCATOR.lock().allocate(size)
 }
 
-/// Free previously allocated memory
+/// Free previously allocated memory. Freeing null is a no-op.
 ///
 /// # Safety
 ///
 /// The pointer must have been previously returned by `alloc`
-pub unsafe fn free(ptr: *mut u8) {
-    if !ptr.is_null() {
-        ALLOCATOR.lock().deallocate(ptr);
+pub unsafe fn free(ptr: *mut u8) -> Result<(), FreeError> {
+    if ptr.is_null() {
+        return Ok(());
     }
+    ALLOCATOR.lock().deallocate(ptr)
+}
+
+/// Current heap usage
+pub fn stats() -> HeapStats {
+    ALLOCATOR.lock().stats()
 }
 
 // Helper function for alignment
-fn align_up(addr: usize, align: usize) -> usize {
+const fn align_up(addr: usize, align: usize) -> usize {
     (addr + align - 1) & !(align - 1)
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::*;
+    use std::boxed::Box;
+    use std::vec::Vec;
+
+    const HEAP_SIZE: usize = 24 * 1024;
+
+    #[repr(C, align(8))]
+    struct Heap([u8; HEAP_SIZE]);
+
+    fn new_heap() -> (Box<Heap>, LinkedListAllocator) {
+        let mut mem = Box::new(Heap([0; HEAP_SIZE]));
+        let mut a = LinkedListAllocator::new();
+        unsafe { a.init(mem.0.as_mut_ptr() as usize, HEAP_SIZE) };
+        (mem, a)
+    }
+
+    /// Tiny deterministic PRNG so the tests need no dependencies
+    struct XorShift(u64);
+    impl XorShift {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    fn block_size(ptr: *mut u8) -> usize {
+        unsafe { (*((ptr as usize - HEADER) as *const BlockHeader)).size }
+    }
+
+    /// Free list is sorted, fully coalesced, in bounds, and together with
+    /// the live blocks accounts for every byte of the heap.
+    fn check_invariants(a: &LinkedListAllocator, live: &[(*mut u8, usize, u8)]) {
+        let mut current = a.head;
+        let mut last_end = 0;
+        while !current.is_null() {
+            let start = current as usize;
+            let size = unsafe { (*current).size };
+            assert!(start >= a.heap_start && start + size <= a.heap_end, "block out of bounds");
+            assert!(start % ALIGN == 0 && size % ALIGN == 0, "misaligned block");
+            assert!(start > last_end || last_end == 0, "free list unsorted or not coalesced");
+            last_end = start + size;
+            current = unsafe { (*current).next };
+        }
+
+        let used: usize = live.iter().map(|&(p, _, _)| block_size(p)).sum();
+        assert_eq!(a.stats().free_bytes + used, HEAP_SIZE, "bytes leaked");
+    }
+
+    fn assert_pristine(a: &LinkedListAllocator) {
+        assert_eq!(
+            a.stats(),
+            HeapStats { heap_size: HEAP_SIZE, free_bytes: HEAP_SIZE, free_blocks: 1 }
+        );
+    }
+
+    #[test]
+    fn alloc_free_restores_heap() {
+        let (_mem, mut a) = new_heap();
+        let p = a.allocate(128);
+        assert!(!p.is_null());
+        unsafe { a.deallocate(p).unwrap() };
+        assert_pristine(&a);
+    }
+
+    #[test]
+    fn repeated_cycles_do_not_leak() {
+        let (_mem, mut a) = new_heap();
+        for size in [1, 7, 8, 13, 128, 1000] {
+            for _ in 0..10_000 {
+                let p = a.allocate(size);
+                assert!(!p.is_null());
+                unsafe { a.deallocate(p).unwrap() };
+            }
+        }
+        assert_pristine(&a);
+    }
+
+    #[test]
+    fn pointers_are_aligned_and_usable() {
+        let (_mem, mut a) = new_heap();
+        let mut ptrs = Vec::new();
+        for size in 1..64 {
+            let p = a.allocate(size);
+            assert_eq!(p as usize % ALIGN, 0);
+            unsafe { p.write_bytes(0xAB, size) };
+            ptrs.push(p);
+        }
+        for p in ptrs {
+            unsafe { a.deallocate(p).unwrap() };
+        }
+        assert_pristine(&a);
+    }
+
+    #[test]
+    fn exhaustion_then_recovery() {
+        let (_mem, mut a) = new_heap();
+        let mut ptrs = Vec::new();
+        loop {
+            let p = a.allocate(100);
+            if p.is_null() {
+                break;
+            }
+            ptrs.push(p);
+        }
+        assert!(ptrs.len() > 100);
+        assert!(a.allocate(HEAP_SIZE).is_null());
+        assert!(a.allocate(usize::MAX).is_null());
+
+        // Free every other block first to force out-of-order coalescing
+        for p in ptrs.iter().step_by(2) {
+            unsafe { a.deallocate(*p).unwrap() };
+        }
+        for p in ptrs.iter().skip(1).step_by(2) {
+            unsafe { a.deallocate(*p).unwrap() };
+        }
+        assert_pristine(&a);
+        assert!(!a.allocate(HEAP_SIZE - HEADER).is_null());
+    }
+
+    #[test]
+    fn rejects_bad_frees() {
+        let (mut mem, mut a) = new_heap();
+        let p = a.allocate(64);
+        let q = a.allocate(64);
+        unsafe {
+            a.deallocate(p).unwrap();
+            assert_eq!(a.deallocate(p), Err(FreeError::DoubleFree));
+            assert_eq!(a.deallocate(p.add(1)), Err(FreeError::InvalidPointer));
+            assert_eq!(a.deallocate(mem.0.as_mut_ptr()), Err(FreeError::InvalidPointer));
+            let outside = (mem.0.as_mut_ptr() as usize + HEAP_SIZE + 64) as *mut u8;
+            assert_eq!(a.deallocate(outside), Err(FreeError::InvalidPointer));
+            a.deallocate(q).unwrap();
+        }
+        assert_pristine(&a);
+    }
+
+    #[test]
+    fn randomized_stress() {
+        for seed in 1..=20u64 {
+            let (_mem, mut a) = new_heap();
+            let mut rng = XorShift(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let mut live: Vec<(*mut u8, usize, u8)> = Vec::new();
+
+            for step in 0..10_000 {
+                if live.is_empty() || rng.below(100) < 55 {
+                    let max = if rng.below(10) == 0 { 4096 } else { 256 };
+                    let size = 1 + rng.below(max);
+                    let p = a.allocate(size);
+                    if !p.is_null() {
+                        let tag = step as u8;
+                        unsafe { p.write_bytes(tag, size) };
+                        live.push((p, size, tag));
+                    }
+                } else {
+                    let (p, size, tag) = live.swap_remove(rng.below(live.len()));
+                    // Contents untouched means no other allocation overlapped it
+                    let data = unsafe { core::slice::from_raw_parts(p, size) };
+                    assert!(data.iter().all(|&b| b == tag), "seed {seed}: overlap");
+                    unsafe { a.deallocate(p).unwrap() };
+                }
+                check_invariants(&a, &live);
+            }
+
+            for (p, _, _) in live.drain(..) {
+                unsafe { a.deallocate(p).unwrap() };
+            }
+            assert_pristine(&a);
+        }
+    }
 }

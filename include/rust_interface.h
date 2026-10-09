@@ -20,11 +20,13 @@
 // Memory management functions provided by Rust
 void rust_init_heap(uintptr_t heap_start, size_t heap_size);
 void *rust_heap_alloc(size_t size);
-void rust_heap_free(void *ptr);
+int32_t rust_heap_free(void *ptr); /* 0 ok, -1 invalid pointer, -2 double free */
+size_t rust_heap_free_bytes(void);
+size_t rust_heap_free_blocks(void);
 
 // Syscall interface
 int32_t rust_syscall(uint32_t number, uint32_t arg1, uint32_t arg2, uint32_t arg3);
-int32_t rust_handle_svc(uint32_t svc_number, uint32_t *args);
+int32_t rust_handle_svc(uint32_t *frame);
 
 // System call numbers
 #define SYS_WRITE 1
@@ -33,5 +35,12 @@ int32_t rust_handle_svc(uint32_t svc_number, uint32_t *args);
 #define SYS_SLEEP 11
 #define SYS_ALLOC 20
 #define SYS_FREE  21
+
+// System call error codes (returned negated)
+#define ERROR_INVALID_SYSCALL  1
+#define ERROR_INVALID_ARGUMENT 2
+#define ERROR_NOT_IMPLEMENTED  3
+#define ERROR_OUT_OF_MEMORY    4
+#define ERROR_DOUBLE_FREE      5
 
 #endif // RUST_INTERFACE_H

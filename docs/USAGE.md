@@ -32,7 +32,7 @@ This will start QEMU with the appropriate machine configuration (lm3s6965evb) an
 The default configuration targets the lm3s6965evb machine in QEMU, which emulates:
 
 - ARM Cortex-M3 CPU
-- 64KB RAM
+- 32KB RAM
 - UART at base address 0x4000C000
 
 If porting to different hardware, update:

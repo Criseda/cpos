@@ -12,7 +12,7 @@
 pub mod allocator;
 
 // Re-export the allocator functions
-pub use allocator::{alloc, free, init_heap};
+pub use allocator::{alloc, free, init_heap, stats, FreeError, HeapStats};
 
 // Define memory constants
 pub const HEAP_START: usize = 0x20001000;

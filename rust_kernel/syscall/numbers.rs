@@ -9,26 +9,25 @@
 //! This module defines the system call numbers used by the kernel.
 
 // File operations
-pub const SYS_WRITE: u32 = 1;
-pub const SYS_READ: u32 = 2;
+pub const SYS_WRITE: usize = 1;
+pub const SYS_READ: usize = 2;
 
 // Process operations
-pub const SYS_EXIT: u32 = 10;
-pub const SYS_SLEEP: u32 = 11;
-pub const SYS_FORK: u32 = 12;
-pub const SYS_GETPID: u32 = 13;
-pub const SYS_YIELD: u32 = 14;
-pub const SYS_WAIT: u32 = 15;
-pub const SYS_WAITPID: u32 = 16;
+pub const SYS_EXIT: usize = 10;
+pub const SYS_SLEEP: usize = 11;
 
 // Memory operations
-pub const SYS_ALLOC: u32 = 20;
-pub const SYS_FREE: u32 = 21;
+pub const SYS_ALLOC: usize = 20;
+pub const SYS_FREE: usize = 21;
 
 // Define syscall result type
-pub type SyscallResult = Result<u32, u32>;
+//
+// usize/isize match uint32_t/int32_t on the 32-bit target
+pub type SyscallResult = Result<usize, usize>;
 
 // Error codes
-pub const ERROR_INVALID_SYSCALL: u32 = 1;
-pub const ERROR_INVALID_ARGUMENT: u32 = 2;
-pub const ERROR_NOT_IMPLEMENTED: u32 = 3;
+pub const ERROR_INVALID_SYSCALL: usize = 1;
+pub const ERROR_INVALID_ARGUMENT: usize = 2;
+pub const ERROR_NOT_IMPLEMENTED: usize = 3;
+pub const ERROR_OUT_OF_MEMORY: usize = 4;
+pub const ERROR_DOUBLE_FREE: usize = 5;
