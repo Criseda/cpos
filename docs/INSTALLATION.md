@@ -4,8 +4,15 @@ This document outlines all prerequisites needed to build and run CPOS, a bare-me
 
 ## Prerequisites
 
+### Using Docker instead
+
+`docker/Dockerfile` builds an image with every tool below, plus the
+nightly Rust, Miri and cargo-fuzz used by the tests. See "Testing" in the
+README. The rest of this page installs the tools natively.
+
 ### Required Software
 
+- **Rust**: Programming language and toolchain for building CPOS
 - **ARM GCC Toolchain**: Cross-compilation toolchain for ARM processors
 - **QEMU**: System emulator for ARM architecture
 - **Make**: Build automation tool
@@ -16,6 +23,9 @@ This document outlines all prerequisites needed to build and run CPOS, a bare-me
 ```bash
 # Update package lists
 sudo apt update
+
+# Install rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Install ARM GCC Toolchain
 sudo apt install gcc-arm-none-eabi binutils-arm-none-eabi
@@ -33,6 +43,9 @@ sudo apt install make git
 # Update package lists
 sudo pacman -Syu
 
+# Install rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
 # Install ARM GCC Toolchain
 sudo pacman -S arm-none-eabi-gcc arm-none-eabi-binutils
 
@@ -49,6 +62,9 @@ sudo pacman -S make git
 # Install Homebrew if not already installed
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
+# Install rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
 # Install ARM GCC Toolchain
 brew install --cask gcc-arm-embedded
 
@@ -63,11 +79,20 @@ brew install make git
 
 Download WSL2, then use the Ubuntu guide.
 
+### Rust target
+
+CPOS builds its Rust kernel for the Cortex-M3, so add that target once:
+
+```bash
+rustup target add thumbv7m-none-eabi
+```
+
 ### Verifying Installation
 
 Verify your installation by checking that the following commands work:
 
 ```bash
+cargo --version
 arm-none-eabi-gcc --version
 qemu-system-arm --version
 make --version

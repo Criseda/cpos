@@ -1,12 +1,13 @@
 [package]
 name = "rust_kernel"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"  # Using 2021 edition for better stability
 
 [lib]
 name = "rust_kernel"
 path = "lib.rs"
-crate-type = ["staticlib"]
+# rlib lets host tools (cargo-fuzz) link the kernel as a normal crate
+crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 spin = "0.10.0"

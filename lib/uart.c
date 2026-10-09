@@ -17,6 +17,33 @@
 #define UART0_DR *((volatile uint32_t *)(UART0_BASE + 0x00))
 #define UART0_FR *((volatile uint32_t *)(UART0_BASE + 0x18))
 
+/*
+ * Once tasks run, the console server owns the UART and the kernel should
+ * never write to it. These let the kernel prove that: after the scheduler
+ * starts, every byte sent from privileged code is counted.
+ */
+static volatile uint32_t scheduler_started;
+static volatile uint32_t privileged_writes;
+
+void uart_mark_scheduler_started(void)
+{
+	scheduler_started = 1;
+}
+
+uint32_t uart_privileged_writes(void)
+{
+	return privileged_writes;
+}
+
+static int running_privileged(void)
+{
+	uint32_t ipsr, control;
+	__asm volatile("mrs %0, ipsr" : "=r"(ipsr));
+	__asm volatile("mrs %0, control" : "=r"(control));
+	/* Handler mode is always privileged; thread mode is unless nPRIV */
+	return ipsr != 0 || (control & 1) == 0;
+}
+
 void uart_init(uint32_t baudrate)
 {
 	/* For QEMU, no real initialization is needed for PL011 UART */
@@ -25,6 +52,9 @@ void uart_init(uint32_t baudrate)
 
 void uart_send_char(char c)
 {
+	if (scheduler_started && running_privileged()) {
+		privileged_writes++;
+	}
 	/* Wait until UART is ready to transmit */
 	while (UART0_FR & (1 << 5)) {
 	}

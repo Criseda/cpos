@@ -1,8 +1,16 @@
 # CPOS - ARM Cortex-M3 Operating System
 
-## Version: 0.2.0
+[![CI](https://github.com/Criseda/cpos/actions/workflows/ci.yml/badge.svg)](https://github.com/Criseda/cpos/actions/workflows/ci.yml)
+
+## Version: 0.3.0
 
 Bare-metal ARM OS designed for embedded systems with ARM Cortex-M3 processors.
+
+A small microkernel-style OS: the kernel (C startup plus a Rust core)
+provides preemptive scheduling, MPU memory isolation, message passing and
+memory allocation, while tasks, including the UART console driver, run
+unprivileged. See [Verified claims](#verified-claims) for what is measured
+and how to reproduce it.
 
 
 ## Getting Started
@@ -21,15 +29,20 @@ See [INSTALLATION.md](docs/INSTALLATION.md) for detailed instructions on install
 
 ```plaintext
 bootloader/       - Boot code responsible for loading the OS
-docs/             - Documentation and specifications
+docs/             - Installation, usage and hardware notes
+docker/           - Build and test image (also used by CI)
 include/          - Header files (shared definitions)
 init/             - System initialization (before kernel runs)
-kernel/           - Core kernel logic
+kernel/           - Core kernel logic, exception entry (sched.c)
 lib/              - Utility libraries for C components
+user/             - Unprivileged tasks: idle, console server, tests
 rust_kernel/      - Rust kernel components
   ├─ memory/      - Memory management implementation
   ├─ syscall/     - System calls implementation
+  ├─ task/        - Scheduler, MPU regions, message passing
+  ├─ fuzz/        - cargo-fuzz targets
   └─ lib.rs       - Rust entry point and FFI interface
+scripts/          - unsafe_audit.py
 linker.ld         - Defines memory layout for program execution
 Makefile          - Automates building and cleaning the project.
 ```
@@ -58,55 +71,81 @@ For detailed instructions on building, running and extending CPOS, see [USAGE.md
 
 ## Interrupt Handling
 
-CPOS uses the standard ARM Cortex-M3 interrupt vector system for handling exceptions and hardware interrupts.
+CPOS uses the standard ARM Cortex-M3 vector table (`kernel/vectors.c`,
+placed at the start of flash by `linker.ld`). Unused entries fall back to a
+weak default handler.
 
-### Vector Table
+| Exception | Handler | Purpose |
+|-----------|---------|---------|
+| Reset | `Reset_Handler` | Copy `.data`, zero `.bss`, run `init` |
+| HardFault, MemManage, BusFault, UsageFault | shared fault entry | Kill the faulting task; halt if the kernel faulted |
+| SVCall | `SVC_Handler` | System calls |
+| PendSV | `PendSV_Handler` | Context switch (lowest priority) |
+| SysTick | `SysTick_Handler` | 10 ms scheduler tick |
+| IRQ 5 (UART0) | `UART0_Handler` | Console input: masks itself and wakes the console server |
 
-- Located at the beginning of Flash memory
-- Contains addresses of exception handlers
-- Implemented in `vectors.c` and placed using the `.vectors` section
+SVC, SysTick, the UART interrupt and the configurable faults share one
+priority so they never preempt each other while holding kernel state;
+PendSV runs below them.
 
-The key vector entries include:
+## Tasks and Scheduling
 
-- **0x00000000**: Initial Stack Pointer - Stack location for exceptions
-- **0x00000004**: Reset_Handler - System reset entry point
-- **0x00000008**: NMI_Handler - Non-maskable interrupt
-- **0x0000000C**: HardFault_Handler - All classes of faults
-- **0x0000002C**: SVC_Handler - Supervisor call (system calls)
+- **Preemptive round robin**: SysTick fires every 10 ms and ends the running
+  task's slice; a task that wakes from sleep runs next.
+- **Context switch** in PendSV: the hardware stacks r0-r3, r12, lr, pc and
+  xPSR, the kernel saves r4-r11 on the task's process stack (PSP).
+- **Unprivileged tasks**: tasks run in thread mode with `CONTROL.nPRIV = 1`
+  on PSP. They cannot raise their own privilege.
+- **Blocking calls** (receive on an empty mailbox, send to a full one) block
+  the task and rewind its PC to the `svc`, so the call simply runs again when
+  the task is woken.
+- **Task lifecycle**: up to 8 tasks live at once; more are queued and start
+  when a slot frees up. Returning from a task's entry function exits it.
 
-### Implementation
+### Memory protection
 
-- **Default Handlers**: All exceptions initially point to a default handler
-- **Weak Symbols**: Handlers are declared with `__attribute__((weak))`
-- **Override Mechanism**: Specific handlers can be implemented where needed
-- **Vector Positioning**: Linker script places vectors at the correct memory address
+Each task owns one 2 KB, size-aligned RAM slot: a private 1 KB heap at the
+bottom, a 32-byte stack guard, and its stack (992 bytes) above. On every
+switch the kernel programs the MPU so the task can reach only:
 
-### Exception Types
+| Region | Memory | Task access |
+|--------|--------|-------------|
+| 0 | Flash (code, constants) | Read, execute |
+| 1 | The task's own slot | Read, write, no execute |
+| 2 | UART0 registers | Read, write; console server only |
+| 3 | Stack guard, between the heap and the stack | None |
 
-- **System Exceptions**: Reset, NMI, HardFault, etc.
-- **SVC (Supervisor Call)**: Used for system calls from user to kernel mode
-- **Peripheral Interrupts**: For device-specific interrupt handling
+Kernel data, the kernel heap, the kernel stack, other tasks' slots and all
+other peripherals fault. Region 3 overlaps region 1 and wins, so a stack
+that grows past its limit faults on the guard, and the kernel reports
+`(stack overflow)`, instead of silently overwriting the heap. The kernel also checks every pointer a task passes
+in a system call against the memory that task owns (its slot, or flash for
+read-only buffers) and returns `-6` (bad address) otherwise.
 
-### Usage Example
+### Message passing and the console server
 
-Implementing a custom SVC handler:
+Each task has a mailbox of four 64-byte messages (`SYS_SEND`/`SYS_RECV`).
+The UART driver runs as an unprivileged **console server** task, the only
+task the MPU lets reach the UART. Once the scheduler starts the kernel never
+touches the UART: `SYS_WRITE` from a task, and the kernel's own log lines
+(faults, test results), go into one ordered stream that the console server
+drains and prints. A counter in the C UART driver records any byte written
+by privileged code after that point; the boot test checks it stays 0.
 
-```c
-void SVC_Handler(void)
-{
-    // Identify which system call was requested
-    // Handle the system call
-    // Return to user mode
-    uart_send_string("System call processed\n");
-}
-```
+Input works the same way round. The UART receive interrupt reaches the
+kernel, which only masks it and wakes the console server; the server reads
+the characters, echoes them and edits the line (Enter, backspace), and the
+kernel unmasks the interrupt when the server next waits for a message. A
+task's `SYS_READ` becomes a request to the console server (an empty message
+from that task), and the task blocks until the server answers with a line.
+The answer goes to a separate per-task slot, not the mailbox, so a task with
+a full mailbox cannot stall the console. The `echo` service task reads lines
+this way and prints them back: type a line while CPOS runs in QEMU.
 
-Triggering a system call:
-
-```c
-// Generate a supervisor call (SVC) with immediate value #0
-__asm volatile("svc #0");
-```
+The console server sees three kinds of sender: the kernel (id 0, log text),
+the UART interrupt (id `0xFFFFFFFF`, nothing to read), and tasks (text to
+print, or an empty message for a read request; an empty `SYS_SEND` to the
+console is rejected so the two cannot be confused).
 
 ## Memory Management
 
@@ -115,8 +154,9 @@ CPOS uses a hybrid approach to memory management, combining C and Rust:
 ### Architecture
 
 - **RAM Layout**: 32KB total (0x20000000 - 0x20008000)
-  - Boot Data: 0x20000000 - 0x20001000
-  - Kernel Heap: 0x20001000 - 0x20007000 (24KB)
+  - Kernel `.data`/`.bss`: 0x20000000 - 0x20002000 (8KB, checked at link time)
+  - Kernel Heap: 0x20002000 - 0x20003000 (4KB)
+  - Task slots: 0x20003000 - 0x20007000 (8 x 2KB)
   - Kernel Stack: 0x20007000 - 0x20008000
 
 ### Memory Implementation
@@ -125,9 +165,14 @@ CPOS uses a hybrid approach to memory management, combining C and Rust:
 - **Language**: Implemented in Rust for memory safety
 - **Features**:
   - Thread-safe (mutex-protected)
-  - First-fit allocation strategy
-  - Block splitting to reduce fragmentation
-  - Size tracking for proper deallocation
+  - First-fit allocation strategy, 8-byte aligned blocks
+  - Block splitting and coalescing of neighbouring free blocks
+  - Rejects double frees and pointers it did not hand out
+  - Validates every free-list header before use, so even a heap whose
+    headers were overwritten (a task can write its own heap) never makes the
+    kernel write outside that heap
+  - One kernel heap, plus a private heap per task (`SYS_ALLOC` in a task)
+  - Usage counters (`rust_heap_free_bytes`, `rust_heap_free_blocks`)
 
 ### C-Rust Integration
 
@@ -140,60 +185,138 @@ rust_init_heap(HEAP_START, HEAP_SIZE);
 // Allocate memory
 void* ptr = rust_heap_alloc(size);
 
-// Free memory
+// Free memory (0 on success, -1 invalid pointer, -2 double free)
 rust_heap_free(ptr);
 ```
 
 ## System Call Interface
 
-CPOS provides a robust system call interface allowing user programs to securely interact with kernel services. The system call mechanism follows ARM EABI conventions and leverages the hardware's SVC (Supervisor Call) instruction.
+System calls use the SVC instruction: number in r0, arguments in r1-r3,
+result back in r0. Errors are negative. The core is implemented in Rust.
 
-### Syscall Architecture
-
-- Dual Interface: System calls can be invoked via C functions or direct SVC instructions
-- Language: Core implementation in Rust for memory safety and robust error handling
-- Stack-Based Arguments: Follows ARM EABI calling conventions
+Calls come from one of two places. Before the scheduler starts, the kernel
+can call them itself (the boot tests do); after that they come from
+unprivileged tasks, and every pointer is checked.
 
 ### Available System Calls
 
-| Number | Name      | Description                      | Arguments          |
-|--------|-----------|----------------------------------|--------------------|
-| 1      | SYS_WRITE | Write data to output device      | fd, buffer, length |
-| 2      | SYS_READ  | Read data from input device      | fd, buffer, length |
-| 10     | SYS_EXIT  | Terminate current process        | exit_code          |
-| 11     | SYS_SLEEP | Sleep for specified milliseconds | ms                 |
-| 20     | SYS_ALLOC | Allocate memory                  | size               |
-| 21     | SYS_FREE  | Free allocated memory            | pointer            |
+| Number | Name       | Description | Arguments |
+|--------|------------|-------------|-----------|
+| 1      | SYS_WRITE  | Write to the console (fd 1); from a task, returns the bytes taken, at most 64 per call | fd, buffer, length |
+| 2      | SYS_READ   | Read one line of console input (fd 0), newline included; from a task, blocks until the console server answers (at most 64 bytes) | fd, buffer, length |
+| 10     | SYS_EXIT   | End the calling task | exit_code |
+| 11     | SYS_SLEEP  | Sleep for at least the given milliseconds (10 ms ticks) | ms |
+| 12     | SYS_YIELD  | Give up the rest of the time slice | - |
+| 13     | SYS_TICKS  | Ticks since the scheduler started | - |
+| 20     | SYS_ALLOC  | Allocate memory (in a task: from its own heap) | size |
+| 21     | SYS_FREE   | Free allocated memory | pointer |
+| 30     | SYS_SEND   | Send up to 64 bytes to a task; blocks while its mailbox is full | task id, buffer, length |
+| 31     | SYS_RECV   | Receive a message; blocks while the mailbox is empty | buffer, max length, sender id out (may be 0) |
 
-### Usage Examples
+Errors: `-1` invalid syscall, `-2` invalid argument, `-3` not implemented,
+`-4` out of memory, `-5` double free, `-6` bad address (pointer outside the
+caller's memory), `-7` no such task (or a task-only call made outside a
+task).
 
-From C Code:
+### Usage Example
 
-```c
-// Write to standard output
-const char *message = "Hello, World!";
-int result = rust_syscall(SYS_WRITE, 1, (uint32_t)message, 13);
-
-// Allocate memory
-uint32_t ptr = rust_syscall(SYS_ALLOC, 1024, 0, 0);
-if (ptr > 0) {
-    // Use allocated memory
-    rust_syscall(SYS_FREE, ptr, 0, 0);
-}
-```
-
-Using SVC instruction directly:
+From a task (wrappers in `include/user.h`):
 
 ```c
-const char *message = "Hello from user space!";
-__asm volatile(
-    "mov r0, #1\n"        // SYS_WRITE syscall number
-    "mov r1, #1\n"        // fd = 1 (stdout)
-    "ldr r2, %[msg]\n"    // buffer address
-    "mov r3, #21\n"       // length of message
-    "svc #0\n"            // SVC instruction
-    :
-    : [msg] "m"(message)
-    : "r0", "r1", "r2", "r3", "memory"
-);
+char buf[64];
+uint32_t from;
+
+sys_write("hello\n", 6);                 /* printed by the console server */
+sys_sleep(100);                          /* about 10 ticks */
+int32_t p = sys_alloc(100);              /* inside this task's slot */
+sys_free(p);
+sys_send(other_task, "ping", 4);
+int32_t n = sys_recv(buf, sizeof(buf), &from);
 ```
+
+## Testing
+
+```bash
+# Host unit tests: allocator, syscalls, scheduler, IPC, MPU encoding
+cd rust_kernel && cargo test
+
+# Same tests under Miri (undefined-behaviour checker). Addresses arrive as
+# integers from the linker and C, hence permissive provenance.
+MIRIFLAGS=-Zmiri-permissive-provenance cargo +nightly miri test
+
+# Fuzzing (nightly + cargo-fuzz)
+cd fuzz
+cargo +nightly fuzz run allocator -- -max_total_time=120
+cargo +nightly fuzz run allocator_hostile -- -max_total_time=120
+cargo +nightly fuzz run syscalls -- -max_total_time=120
+
+# Unsafe audit: every unsafe needs a SAFETY justification
+python3 scripts/unsafe_audit.py rust_kernel
+
+# On-target tests: boot in QEMU, every check prints OK or FAILED
+make && make qemu
+
+# The same, checked automatically: waits for the tests, types a line for
+# the echo task, and fails on any FAILED or missing result
+scripts/qemu_test.sh cpos.elf
+```
+
+Everything above runs in the image from `docker/Dockerfile` (ARM GCC,
+QEMU 7.2, stable Rust with the Cortex-M3 target, nightly with Miri and
+cargo-fuzz), so no local toolchain is needed:
+
+```bash
+docker build -t cpos-dev docker
+docker run --rm -v "$PWD:/src" -w /src cpos-dev make
+docker run --rm -v "$PWD:/src" -w /src cpos-dev bash scripts/qemu_test.sh
+```
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on pushes to `main` and `dev` and on pull
+requests, inside the same image: host tests, the unsafe audit, the build
+and the QEMU boot check in one job, Miri in another, and 60 seconds of
+fuzzing per target. A fuzz job that finds a crash uploads the input.
+
+The boot run first exercises the allocator and syscalls from the kernel,
+then starts the scheduler and runs unprivileged test tasks: preemption,
+sleep timing, privilege, MPU faults, pointer checks, per-task heaps, IPC,
+exit and stack overflow. Expected faults are reported as `stopped by fault: OK`.
+Once the tests finish, type a line and press Enter: the `echo` task reads
+it with `SYS_READ` and prints `[echo] task read: ...`.
+
+## Verified claims
+
+Measured with Rust 1.99 (host tests), nightly 1.101 (Miri, cargo-fuzz) and
+QEMU 7.2 (`lm3s6965evb`) in a Debian bookworm container. The QEMU boot run
+reports 41 checks OK and 0 FAILED.
+
+| Claim | Evidence |
+|-------|----------|
+| 10 system calls, including process control (exit, sleep, yield) and message passing | Syscall table above; QEMU boot tests and host tests |
+| Preemptive multitasking | QEMU: two busy-looping tasks are each preempted 13-14 times in 30 ticks; a 100 ms sleep under load wakes after exactly 10 ticks |
+| Tasks run unprivileged; system calls switch to privileged handler mode | QEMU: `CONTROL.nPRIV = 1` in tasks, a task cannot clear it, and its write to the SysTick control register has no effect |
+| MPU isolation between tasks and from the kernel | QEMU: tasks touching kernel data, another task's stack or the UART are killed by MemManage faults; the kernel rejects out-of-bounds pointers with `-6` |
+| Stack overflow detection | QEMU: a runaway recursive task is killed by a MemManage fault inside its stack guard, before it reaches its heap |
+| Microkernel-style: the UART driver is an unprivileged server task | QEMU: all task output goes through the console server; privileged UART writes after scheduler start = 0 |
+| Console input through the server | QEMU: a line typed on the serial port (also before the scheduler starts) reaches the `echo` task's `SYS_READ`; host test: request, interrupt masking, answer with a full mailbox |
+| No leaks in the allocator | Host tests: 200,000 randomized operations with exact byte accounting and invariant checks after every step; boot test: the heap returns to one block of its original size after 1,000 mixed cycles; Miri: no undefined behaviour in the test suite; fuzzing: 2.4M random alloc/free sequences end fully coalesced |
+| Memory-safety discipline in the Rust core | 33 `unsafe` sites in kernel code (26 blocks, 6 functions, 1 impl), all with a written `SAFETY` justification (`scripts/unsafe_audit.py`); fuzzing: 840K random syscall sequences with hostile pointers (including console input requests) and 5.7M allocator runs with corrupted headers, with no crash, hang or out-of-bounds write |
+
+Known limits:
+
+- CPOS has only run on QEMU so far. [HARDWARE.md](docs/HARDWARE.md) lists
+  what a real LM3S6965 board needs (clock and UART setup) and what to
+  expect there.
+- QEMU 7.2 lets an unprivileged task *read* System Control Space registers;
+  real Cortex-M3 hardware raises a BusFault. Tasks still cannot change them.
+- The console holds one finished line until a task reads it; characters
+  typed meanwhile are dropped.
+- The stack guard is 32 bytes. A single function that reserves more stack
+  than that at once can step over it; the allocator's header checks still
+  keep a corrupted heap from leading the kernel outside it.
+- The allocator detects double frees of free memory, but freeing a stale
+  pointer into a block that has since been reused (use after free) cannot be
+  told apart from a valid free. Even then it never writes outside the heap.
+- No comparative security figure against C is claimed: the measurements
+  above are what is checked.
