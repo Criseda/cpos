@@ -15,9 +15,16 @@
 #include "uart.h"
 #include "vectors.h"
 #include "rust_interface.h"
+#include "user.h"
 
-#define HEAP_START 0x20001000
-#define HEAP_SIZE 0x6000 // 24KB
+/* Provided by linker.ld */
+extern uint32_t _heap_start, _heap_size, _task_slots, _flash_end;
+
+/* Exit point for tasks whose entry function returns (kernel/sched.c) */
+void task_exit_trampoline(void);
+
+/* SysTick reload for a TICK_MS tick on the 12 MHz QEMU lm3s6965evb clock */
+#define SYSTICK_RELOAD (12000000 / 1000 * TICK_MS)
 
 void __attribute__((naked)) SVC_Handler(void)
 {
@@ -111,11 +118,11 @@ void syscall_test(void)
 	result = rust_syscall(999, 0, 0, 0);
 	report("  - Invalid syscall handling", result == -ERROR_INVALID_SYSCALL);
 
-	// Exit and sleep need the scheduler; they must say so explicitly
-	report("  - SYS_EXIT not implemented",
-	       rust_syscall(SYS_EXIT, 0, 0, 0) == -ERROR_NOT_IMPLEMENTED);
-	report("  - SYS_SLEEP not implemented",
-	       rust_syscall(SYS_SLEEP, 10, 0, 0) == -ERROR_NOT_IMPLEMENTED);
+	// Task-only calls made from the kernel itself must be refused
+	report("  - SYS_EXIT outside a task rejected",
+	       rust_syscall(SYS_EXIT, 0, 0, 0) == -ERROR_NO_TASK);
+	report("  - SYS_SLEEP outside a task rejected",
+	       rust_syscall(SYS_SLEEP, 10, 0, 0) == -ERROR_NO_TASK);
 
 	// Test the SVC instruction path, including the return value in r0
 	const char *direct_msg = "Test from direct SVC!\n";
@@ -178,7 +185,7 @@ void memory_test(void)
 	uart_send_string("  - Multiple allocation test:\n");
 
 	for (int i = 0; i < 5; i++) {
-		blocks[i] = rust_heap_alloc(1024); /* 1KB blocks */
+		blocks[i] = rust_heap_alloc(512); /* 512-byte blocks */
 		if (blocks[i]) {
 			uart_send_string("    - Block allocated\n");
 		} else {
@@ -218,13 +225,21 @@ void main(void)
 
 	/* Initialize Rust heap allocator */
 	uart_send_string("Initializing Rust heap allocator...\n");
-	rust_init_heap(HEAP_START, HEAP_SIZE);
+	rust_init_heap((uintptr_t)&_heap_start, (size_t)&_heap_size);
 
 	/* TESTS */
 	memory_test();
 	syscall_test();
 
-	/* Infinite loop to keep the kernel running */
+	/* Hand over to the tasks. From here on the kernel never touches the
+	 * UART; the console server task prints for everyone. */
+	uart_send_string("[TEST] Starting scheduler; task output follows\n");
+	register_user_tasks();
+	rust_sched_start((uintptr_t)&_task_slots, (uintptr_t)&_flash_end,
+			 task_exit_trampoline, SYSTICK_RELOAD);
+
+	/* Only reached if the scheduler refused to start */
+	uart_send_string("Scheduler failed to start: FAILED\n");
 	while (1) {
 	}
 }

@@ -8,23 +8,40 @@
 //!
 //! Host tests swap the driver for in-memory buffers.
 
-#[cfg(not(test))]
+#[cfg(target_arch = "arm")]
 mod imp {
     extern "C" {
         fn uart_send_char(c: u8);
         fn uart_receive_char() -> u8;
+        fn uart_mark_scheduler_started();
+        fn uart_privileged_writes() -> u32;
     }
 
     pub fn send(byte: u8) {
+        // SAFETY: the C driver polls the UART registers; it has no
+        // preconditions
         unsafe { uart_send_char(byte) }
     }
 
     pub fn receive() -> u8 {
+        // SAFETY: as above
         unsafe { uart_receive_char() }
+    }
+
+    /// From now on the driver counts every byte the kernel writes itself
+    pub fn mark_scheduler_started() {
+        // SAFETY: sets a flag in the C driver
+        unsafe { uart_mark_scheduler_started() }
+    }
+
+    /// Bytes privileged code wrote since `mark_scheduler_started`
+    pub fn privileged_writes() -> u32 {
+        // SAFETY: reads a counter in the C driver
+        unsafe { uart_privileged_writes() }
     }
 }
 
-#[cfg(test)]
+#[cfg(not(target_arch = "arm"))]
 pub(crate) mod imp {
     extern crate std;
 
@@ -44,9 +61,15 @@ pub(crate) mod imp {
     pub fn receive() -> u8 {
         INPUT.with(|i| i.borrow_mut().pop_front().expect("test UART input exhausted"))
     }
+
+    pub fn mark_scheduler_started() {}
+
+    pub fn privileged_writes() -> u32 {
+        0
+    }
 }
 
-pub use imp::{receive, send};
+pub use imp::{mark_scheduler_started, privileged_writes, receive, send};
 
 /// Send raw bytes; unlike the C `uart_send_string` this needs no NUL terminator
 pub fn send_bytes(bytes: &[u8]) {
