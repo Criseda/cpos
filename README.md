@@ -27,7 +27,8 @@ See [INSTALLATION.md](docs/INSTALLATION.md) for detailed instructions on install
 
 ```plaintext
 bootloader/       - Boot code responsible for loading the OS
-docs/             - Documentation and specifications
+docs/             - Installation, usage and hardware notes
+docker/           - Build and test image (also used by CI)
 include/          - Header files (shared definitions)
 init/             - System initialization (before kernel runs)
 kernel/           - Core kernel logic, exception entry (sched.c)
@@ -252,6 +253,20 @@ python3 scripts/unsafe_audit.py rust_kernel
 
 # On-target tests: boot in QEMU, every check prints OK or FAILED
 make && make qemu
+
+# The same, checked automatically: waits for the tests, types a line for
+# the echo task, and fails on any FAILED or missing result
+scripts/qemu_test.sh cpos.elf
+```
+
+Everything above runs in the image from `docker/Dockerfile` (ARM GCC,
+QEMU 7.2, stable Rust with the Cortex-M3 target, nightly with Miri and
+cargo-fuzz), so no local toolchain is needed:
+
+```bash
+docker build -t cpos-dev docker
+docker run --rm -v "$PWD:/src" -w /src cpos-dev make
+docker run --rm -v "$PWD:/src" -w /src cpos-dev bash scripts/qemu_test.sh
 ```
 
 The boot run first exercises the allocator and syscalls from the kernel,
@@ -281,6 +296,9 @@ reports 41 checks OK and 0 FAILED.
 
 Known limits:
 
+- CPOS has only run on QEMU so far. [HARDWARE.md](docs/HARDWARE.md) lists
+  what a real LM3S6965 board needs (clock and UART setup) and what to
+  expect there.
 - QEMU 7.2 lets an unprivileged task *read* System Control Space registers;
   real Cortex-M3 hardware raises a BusFault. Tasks still cannot change them.
 - The console holds one finished line until a task reads it; characters
